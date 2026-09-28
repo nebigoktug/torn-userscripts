@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Flower Set Helper
 // @namespace    https://github.com/nebigoktug
-// @version      2.0.0
+// @version      2.0.1
 // @description  Counts your flowers, shows how many museum flower sets you can make and what's missing for a target, where each flower is sold abroad, and what the missing ones cost on the item market. Display only, no automation.
 // @author       Nebigoktug
 // @license      MIT
@@ -32,7 +32,7 @@
     // Torn PDA may inject on any URL containing "torn"; only run on the game.
     if (!/^(www\.)?torn\.com$/i.test(location.hostname)) return;
 
-    const VERSION  = '2.0.0';
+    const VERSION  = '2.0.1';
     const REPO_URL = 'https://github.com/nebigoktug/torn-userscripts';
     const LS_KEY   = 'tfs_api_key';
     const LS_PREFS = 'tfs_prefs';
@@ -164,12 +164,12 @@
         st.id = 'tfs-styles';
         st.textContent = `
         :root {
-            --tfs-bg: #1f2227; --tfs-bg2: #15171b; --tfs-fg: #eee; --tfs-muted: #9aa0a6;
+            --tfs-bg: #1f2227; --tfs-bg2: #15171b; --tfs-fg: #f1f3f5; --tfs-muted: #c3c8cf;
             --tfs-border: #3a3f47; --tfs-hover: #2c3037; --tfs-accent: #e05aa0; --tfs-accent-fg: #fff;
             --tfs-good: #2ecc40; --tfs-bad: #ff6b61; --tfs-link: #4aa3ff; --tfs-shadow: rgba(0,0,0,0.6);
         }
         body:not(.dark-mode) {
-            --tfs-bg: #fff; --tfs-bg2: #f1f3f5; --tfs-fg: #1d2125; --tfs-muted: #5f6670;
+            --tfs-bg: #fff; --tfs-bg2: #f1f3f5; --tfs-fg: #15181b; --tfs-muted: #454c55;
             --tfs-border: #d0d5db; --tfs-hover: #e7eaee; --tfs-accent: #c83e87; --tfs-accent-fg: #fff;
             --tfs-good: #1f9a30; --tfs-bad: #d93025; --tfs-link: #1a73e8; --tfs-shadow: rgba(0,0,0,0.25);
         }
@@ -192,8 +192,11 @@
             position: relative; width: 420px; max-width: 95vw; max-height: 90vh; display: flex; flex-direction: column;
             background: var(--tfs-bg); color: var(--tfs-fg); border: 1px solid var(--tfs-border);
             border-radius: 12px; box-shadow: 0 10px 34px var(--tfs-shadow); animation: tfs-pop .18s ease-out;
-            box-sizing: border-box; font-size: 13px;
+            box-sizing: border-box; font-size: 14px; line-height: 1.35;
         }
+        /* Torn's own CSS greys out table cells and spans in dark mode; pin our colours. */
+        #tfs-overlay .tfs-card, #tfs-overlay .tfs-card td, #tfs-overlay .tfs-card label,
+        #tfs-overlay .tfs-card p, #tfs-overlay .tfs-card b { color: var(--tfs-fg) !important; }
         #tfs-overlay .tfs-head { padding: 14px 44px 10px 16px; border-bottom: 1px solid var(--tfs-border); }
         #tfs-overlay h2 { margin: 0; font-size: 16px; display: flex; align-items: center; gap: 8px; }
         #tfs-overlay .tfs-ver { font-size: 10px; font-weight: 700; color: var(--tfs-muted);
@@ -227,27 +230,29 @@
         #tfs-overlay .tfs-summary { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; margin-bottom: 10px; }
         #tfs-overlay .tfs-stat { background: var(--tfs-bg2); border: 1px solid var(--tfs-border); border-radius: 8px;
             padding: 7px 8px; text-align: center; }
-        #tfs-overlay .tfs-stat b { display: block; font-size: 17px; font-variant-numeric: tabular-nums; }
-        #tfs-overlay .tfs-stat span { font-size: 10px; color: var(--tfs-muted); text-transform: uppercase; letter-spacing: .4px; }
-        #tfs-overlay table.tfs-table { width: 100%; border-collapse: collapse; font-size: 12px; }
-        #tfs-overlay .tfs-table th { text-align: left; font-size: 10px; text-transform: uppercase; letter-spacing: .4px;
-            color: var(--tfs-muted); font-weight: 700; padding: 4px 4px; border-bottom: 1px solid var(--tfs-border); }
+        #tfs-overlay .tfs-stat b { display: block; font-size: 19px; font-weight: 800; font-variant-numeric: tabular-nums; }
+        #tfs-overlay .tfs-stat span { font-size: 11px; font-weight: 700; color: var(--tfs-muted) !important; text-transform: uppercase; letter-spacing: .4px; }
+        #tfs-overlay table.tfs-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+        #tfs-overlay .tfs-table th { text-align: left; font-size: 11px; text-transform: uppercase; letter-spacing: .4px;
+            color: var(--tfs-muted) !important; font-weight: 700; padding: 4px 4px; border-bottom: 1px solid var(--tfs-border); }
         #tfs-overlay .tfs-table td { padding: 6px 4px; border-bottom: 1px solid var(--tfs-border); vertical-align: middle; }
-        #tfs-overlay .tfs-table .num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
-        #tfs-overlay .tfs-table .country { display: block; font-size: 10px; color: var(--tfs-muted); }
+        #tfs-overlay .tfs-table .num { text-align: right; font-weight: 700; font-variant-numeric: tabular-nums; white-space: nowrap; }
+        #tfs-overlay .tfs-table th.num { font-weight: 700; }
+        #tfs-overlay .tfs-table a { font-weight: 700; }
+        #tfs-overlay .tfs-table .country { display: block; font-size: 11px; color: var(--tfs-muted) !important; }
         #tfs-overlay .tfs-table tr.low td:first-child { box-shadow: inset 3px 0 0 var(--tfs-bad); }
         #tfs-overlay .tfs-table tr.ok  td:first-child { box-shadow: inset 3px 0 0 var(--tfs-good); }
-        #tfs-overlay .tfs-miss { color: var(--tfs-bad); font-weight: 700; }
-        #tfs-overlay .tfs-okmark { color: var(--tfs-good); font-weight: 700; }
-        #tfs-overlay .tfs-note { font-size: 11px; color: var(--tfs-muted); margin-top: 8px; line-height: 1.45; }
-        #tfs-overlay .tfs-msg { padding: 10px; border-radius: 8px; background: var(--tfs-bg2); color: var(--tfs-muted); text-align: center; }
-        #tfs-overlay .tfs-msg.err { color: var(--tfs-bad); }
+        #tfs-overlay .tfs-miss { color: var(--tfs-bad) !important; font-weight: 800; }
+        #tfs-overlay .tfs-okmark { color: var(--tfs-good) !important; font-weight: 800; }
+        #tfs-overlay .tfs-note { font-size: 12px; color: var(--tfs-muted) !important; margin-top: 10px; line-height: 1.5; }
+        #tfs-overlay .tfs-msg { padding: 10px; border-radius: 8px; background: var(--tfs-bg2); color: var(--tfs-muted) !important; text-align: center; }
+        #tfs-overlay .tfs-msg.err { color: var(--tfs-bad) !important; }
         #tfs-overlay .tfs-tos { margin-top: 12px; }
         #tfs-overlay .tfs-tos table { width: 100%; border-collapse: collapse; font-size: 11px; }
         #tfs-overlay .tfs-tos th, #tfs-overlay .tfs-tos td { text-align: left; vertical-align: top; padding: 4px;
             border-bottom: 1px solid var(--tfs-border); }
         #tfs-overlay .tfs-tos th { width: 34%; }
-        #tfs-overlay .tfs-tos td { color: var(--tfs-muted); }
+        #tfs-overlay .tfs-tos td { color: var(--tfs-muted) !important; }
         `;
         (document.head || document.documentElement).appendChild(st);
     }
