@@ -6,6 +6,7 @@ Torn City userscripts.
 |---|---|
 | [Torn FF/BS Badges](Torn_FFBS_Badges.user.js) | FairFight + estimated battle-stat badges next to player names (via FFScouter), live hospital/travel timers and a sort/filter bar on faction and war member lists. Works on Torn PDA and desktop. |
 | [Torn Graffiti Helper](Torn_Graffiti_Helper.user.js) | Rep progress, colour suggestions and crew/CS100 targets on the graffiti crime page. [Greasy Fork](https://greasyfork.org/en/scripts/587425-torn-graffiti-helper) |
+| [Torn Flower Set Helper](Torn_Flower_Set_Helper.user.js) | Counts your flowers, complete museum sets and what's missing for a target, where each flower is sold abroad, and what the missing ones cost on the item market. |
 | [Torn Shoplifting Assistant](shoplifting-assistant.user.js) | Shoplifting helper. |
 | [Torn Panel Boilerplate](Torn_Panel_Boilerplate.user.js) | Reusable panel boilerplate for new scripts. |
 
