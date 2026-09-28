@@ -1,13 +1,16 @@
 // ==UserScript==
 // @name         Torn FF/BS Badges
 // @namespace    https://github.com/tornffbs
-// @version      2.2.1
-// @description  Shows FairFight + estimated Battle Stat badges next to player names on Torn. On faction pages it also adds a live hospital countdown and travel info (destination + landing time), and can rewrite the member-list Status column with live timers. Includes an in-page settings panel (⚙). Works on Torn PDA and desktop Tampermonkey.
+// @version      2.3.0
+// @description  Shows FairFight + estimated Battle Stat badges next to player names on Torn. On faction pages it also adds a live hospital countdown and travel info, can rewrite the member-list Status column with live timers, and can sort/filter the member list. Includes an in-page settings panel (⚙). Works on Torn PDA and desktop Tampermonkey.
 // @author       Nebigoktug
 // @match        https://www.torn.com/*
 // @match        https://torn.com/*
 // @grant        GM_xmlhttpRequest
 // @grant        GM.xmlHttpRequest
+// @grant        GM_getValue
+// @grant        GM_setValue
+// @grant        GM_deleteValue
 // @connect      ffscouter.com
 // @connect      api.torn.com
 // @run-at       document-idle
@@ -28,16 +31,22 @@
      * ===================================================================== */
     const LS_KEY         = 'ffbs_api_key';    // where the key is stored locally
     const LS_SETTINGS    = 'ffbs_settings';   // where the ⚙ panel settings live
-    const SCAN_INTERVAL  = 1500;              // page re-scan (PDA SPA), ms
+    const LS_STATS       = 'ffbs_stats_cache';// persistent FFScouter cache
+    const LS_OWN_BS      = 'ffbs_own_bs';     // cached own battle-stat total
+    const LS_CACHE_OWNER = 'ffbs_cache_owner';// hash of the key the caches belong to
+    const FALLBACK_SCAN_INTERVAL = 10000;     // safety re-scan; MutationObserver does the real work
+    const SCAN_DEBOUNCE_MS = 250;             // coalesce bursts of DOM mutations
     const BATCH_SIZE     = 200;               // FFScouter targets per request (max 205)
     const RATELIMIT_MS   = 8000;              // backoff after a 429
     const TEMP_BACKOFF_MS = 10000;            // backoff after a network/5xx/bad-JSON error
-    const BADGE_ATTR     = 'data-ffbs';       // marks a decorated wrapper
+    const BADGE_ATTR     = 'data-ffbs';       // marks a decorated player link
 
     const FACTION_FETCH_INTERVAL   = 60000;   // refresh faction status, ms
     const TIMER_TICK_INTERVAL      = 1000;    // redraw countdowns, ms
     const OWN_STATS_RETRY_INTERVAL = 15000;   // retry own battle stats if it failed, ms
-    const STATS_TTL_MS             = 600000;  // FFScouter stats cache lifetime, ms (10 min)
+    const OWN_STATS_TTL_MS         = 86400000; // re-fetch own battle stats once a day
+    const STATS_CACHE_MAX          = 20000;   // max players kept in the persistent cache
+    const STATS_SAVE_DEBOUNCE_MS   = 2000;
 
     // -------- User-configurable settings (defaults). Overridden by ⚙ panel. -----
     const SETTINGS_DEFAULTS = {
@@ -46,6 +55,12 @@
         ENHANCE_STATUS_CELL:   true,   // rewrite the faction "Status" column
         SKIP_CHAT:             true,   // don't badge names inside the chat box
         HIDE_WHEN_NO_DATA:     true,   // draw nothing (not "?") when FF & BS unknown
+        SORT_TOOLBAR:          true,   // sort/filter bar above faction member lists
+        DEBUG:                 false,  // verbose console logging
+        // Cache
+        CACHE_HOURS: 72,               // how long FFScouter data is reused before refetch
+        // Hospital: highlight when this many seconds (or fewer) remain
+        HOSP_ALERT_SEC: 60,
         // FF colour thresholds
         FF_GREEN:  1.5,
         FF_YELLOW: 2.25,
@@ -53,6 +68,9 @@
         // BS colour thresholds (multiples of your own total)
         BS_YELLOW: 1.10,
         BS_ORANGE: 1.25,
+        // Faction list sort/filter state (set from the toolbar)
+        LIST_SORT: 'default',          // default | ff | bs | hosp
+        LIST_ONLY_OKAY: false,
     };
 
     // Active settings object — populated in loadSettings() before anything runs.
@@ -76,6 +94,54 @@
     function resetSettings() {
         S = Object.assign({}, SETTINGS_DEFAULTS);
         saveSettings();
+    }
+    function statsTtlMs() {
+        const h = Number(S.CACHE_HOURS);
+        return (isNaN(h) || h <= 0 ? SETTINGS_DEFAULTS.CACHE_HOURS : h) * 3600000;
+    }
+
+    function log(...args) {
+        if (S.DEBUG) console.log('[FFBS]', ...args);
+    }
+
+    /* =======================================================================
+     * KEY STORAGE
+     * Desktop managers: GM storage (not readable by other scripts on the page).
+     * Torn PDA: localStorage (PDA's GM storage support varies).
+     * ===================================================================== */
+    const useGM = typeof PDA_httpGet !== 'function' &&
+                  typeof GM_getValue === 'function' && typeof GM_setValue === 'function';
+    function keyGet() {
+        if (useGM) {
+            try {
+                const v = GM_getValue(LS_KEY, null);
+                if (typeof v === 'string' && v.trim()) return v.trim();
+                // One-time migration from older versions that used localStorage.
+                const old = localStorage.getItem(LS_KEY);
+                if (old && old.trim()) {
+                    GM_setValue(LS_KEY, old.trim());
+                    localStorage.removeItem(LS_KEY);
+                    return old.trim();
+                }
+                return null;
+            } catch (e) { /* fall through to localStorage */ }
+        }
+        try { const v = localStorage.getItem(LS_KEY); return v && v.trim() ? v.trim() : null; } catch (e) { return null; }
+    }
+    // Short non-reversible fingerprint, so caches can be tied to a key
+    // without storing the key itself next to them.
+    function hashKey(key) {
+        let h = 5381;
+        for (let i = 0; i < key.length; i++) h = ((h << 5) + h + key.charCodeAt(i)) | 0;
+        return (h >>> 0).toString(36);
+    }
+    function keySet(key) {
+        if (useGM) { try { GM_setValue(LS_KEY, key); return; } catch (e) {} }
+        try { localStorage.setItem(LS_KEY, key); } catch (e) {}
+    }
+    function keyDel() {
+        if (useGM) { try { (typeof GM_deleteValue === 'function') ? GM_deleteValue(LS_KEY) : GM_setValue(LS_KEY, null); } catch (e) {} }
+        try { localStorage.removeItem(LS_KEY); } catch (e) {}
     }
 
     // States that get a countdown badge on the avatar (travel/abroad handled separately)
@@ -118,6 +184,43 @@
     let userQueueTimer     = null;
 
     let scanTimer = null, factionTimer = null, tickTimer = null, ownStatsTimer = null;
+    let observer = null, scanDebounce = null;
+
+    /* =======================================================================
+     * PERSISTENT STATS CACHE  (localStorage, compact: pid -> [ff, bsRaw, bsHuman, ts])
+     * ===================================================================== */
+    let statsSaveTimer = null;
+    function loadStatsCache() {
+        try {
+            const raw = localStorage.getItem(LS_STATS);
+            if (!raw) return;
+            const obj = JSON.parse(raw);
+            const cutoff = Date.now() - statsTtlMs();
+            Object.keys(obj).forEach((pid) => {
+                const e = obj[pid];
+                if (!Array.isArray(e) || !(e[3] > cutoff)) return;
+                statsCache.set(pid, { ff: e[0], bsRaw: e[1], bsHuman: e[2], ts: e[3] });
+            });
+            log(`Loaded ${statsCache.size} cached player(s).`);
+        } catch (e) { /* corrupt cache — start fresh */ }
+    }
+    function saveStatsCacheSoon() {
+        if (statsSaveTimer) return;
+        statsSaveTimer = setTimeout(() => {
+            statsSaveTimer = null;
+            try {
+                const cutoff = Date.now() - statsTtlMs();
+                let entries = Array.from(statsCache.entries()).filter(([, v]) => v.ts > cutoff);
+                if (entries.length > STATS_CACHE_MAX) {
+                    entries.sort((a, b) => b[1].ts - a[1].ts);
+                    entries = entries.slice(0, STATS_CACHE_MAX);
+                }
+                const obj = {};
+                entries.forEach(([pid, v]) => { obj[pid] = [v.ff, v.bsRaw, v.bsHuman, v.ts]; });
+                localStorage.setItem(LS_STATS, JSON.stringify(obj));
+            } catch (e) { log('Could not save stats cache.', e); }
+        }, STATS_SAVE_DEBOUNCE_MS);
+    }
 
     /* =======================================================================
      * HTTP LAYER  (Torn PDA + desktop Tampermonkey)
@@ -185,7 +288,7 @@
     function handleTornBackoff(cat) {
         if (cat === 'ratelimit') {
             tornPausedUntil = Date.now() + TORN_BACKOFF_MS;
-            console.log('[FFBS] Torn API rate-limited; backing off 15s.');
+            log('Torn API rate-limited; backing off 15s.');
             return true;
         }
         if (cat === 'temp') {
@@ -279,7 +382,7 @@
         const style = document.createElement('style');
         style.id = 'ffbs-styles';
         style.textContent = `
-        .ffbs-wrap { position: relative !important; display: inline-block; }
+        a[data-ffbs] { position: relative !important; }
         .ffbs-badge {
             position: absolute; z-index: 9999;
             font-size: 9px; line-height: 1; font-weight: 800;
@@ -309,6 +412,29 @@
         }
         .ffbs-timer-hosp   { border-color: #ff4136; background-color: rgba(255,65,54,0.6); }
         .ffbs-timer-travel { border-color: #39a0ff; background-color: rgba(57,160,255,0.6); }
+
+        /* hospital almost over -> pulse */
+        @keyframes ffbs-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
+        .ffbs-timer.ffbs-soon { border-color: #2ecc40; background-color: rgba(46,204,64,0.7);
+            animation: ffbs-pulse 1s ease-in-out infinite; }
+        span[data-ffbs-soon] { color: #2ecc40 !important; font-weight: 700;
+            animation: ffbs-pulse 1s ease-in-out infinite; }
+
+        /* faction list sort/filter */
+        [data-ffbs-sorted] { display: flex !important; flex-direction: column !important; }
+        [data-ffbs-hidden] { display: none !important; }
+        .ffbs-toolbar {
+            display: flex; flex-wrap: wrap; align-items: center; gap: 4px;
+            padding: 5px 6px; margin: 4px 0; font: 11px Arial, Helvetica, sans-serif;
+            background: #1f2227; border: 1px solid #3a3f47; border-radius: 6px; color: #ccc;
+        }
+        .ffbs-toolbar button {
+            padding: 3px 8px; font-size: 11px; font-weight: 700; cursor: pointer;
+            background: #15171b; color: #ccc; border: 1px solid #3a3f47; border-radius: 4px;
+        }
+        .ffbs-toolbar button.active { background: #2ecc40; color: #0a0a0a; border-color: #2ecc40; }
+        .ffbs-toolbar label { margin-left: auto; display: flex; align-items: center; gap: 4px; cursor: pointer; }
+        .ffbs-toolbar input { accent-color: #2ecc40; margin: 0; }
         #ffbs-setup {
             position: fixed; inset: 0; z-index: 2147483647; background: rgba(0,0,0,0.85);
             display: flex; align-items: center; justify-content: center;
@@ -400,6 +526,15 @@
      * OWN BATTLE STATS
      * ===================================================================== */
     async function loadOwnBattleStats() {
+        // Reuse today's value if we have one.
+        try {
+            const c = JSON.parse(localStorage.getItem(LS_OWN_BS) || 'null');
+            if (c && c.total > 0 && Date.now() - c.ts < OWN_STATS_TTL_MS) {
+                myBattleStat = c.total;
+                recolorBS();
+                return true;
+            }
+        } catch (e) {}
         if (Date.now() < tornPausedUntil) return false;
         try {
             const resp = await httpGet(`https://api.torn.com/v2/user/battlestats?key=${encodeURIComponent(API_KEY)}`);
@@ -407,31 +542,33 @@
             if (cat === 'auth') { clearKeyAndReopenSetup(); return false; }
             if (handleTornBackoff(cat)) return false;
             if (cat !== 'ok') {
-                console.log('[FFBS] Own battle stats fetch failed; will retry. BS stays grey.');
+                log('Own battle stats fetch failed; will retry. BS stays grey.');
                 return false;
             }
             const data = JSON.parse(resp.text);
             if (data.error) {
                 if (data.error.code === 16) {
                     ownStatsGaveUp = true;
-                    console.log('[FFBS] Key has no battle-stats access (error 16). BS stays grey.');
+                    log('Key has no battle-stats access (error 16). BS stays grey.');
                 } else {
-                    console.log(`[FFBS] Battle stats API error ${data.error.code}; will retry.`);
+                    log(`Battle stats API error ${data.error.code}; will retry.`);
                 }
                 return false;
             }
             const bs = data.battlestats || data;
+            const val = (x) => Number(x && typeof x === 'object' ? x.value : x);
             const total = Number(bs.total) ||
-                (Number(bs.strength) + Number(bs.defense) + Number(bs.speed) + Number(bs.dexterity));
+                (val(bs.strength) + val(bs.defense) + val(bs.speed) + val(bs.dexterity));
             if (total && !isNaN(total) && total > 0) {
                 myBattleStat = total;
-                console.log(`[FFBS] Own battle stats loaded: ${compact(total)}.`);
+                try { localStorage.setItem(LS_OWN_BS, JSON.stringify({ total: total, ts: Date.now() })); } catch (e) {}
+                log(`Own battle stats loaded: ${compact(total)}.`);
                 recolorBS();
                 return true;
             }
             return false;
         } catch (e) {
-            console.log('[FFBS] Own battle stats fetch threw; will retry.', e);
+            log('Own battle stats fetch threw; will retry.', e);
             return false;
         }
     }
@@ -460,8 +597,8 @@
                 currentFactionId = fid;
                 tickTimers();
             }
-            const path = fid ? `faction/${fid}` : 'faction/';
-            const resp = await httpGet(`https://api.torn.com/${path}?selections=basic&key=${encodeURIComponent(API_KEY)}`);
+            const path = fid ? `faction/${fid}/members` : 'faction/members';
+            const resp = await httpGet(`https://api.torn.com/v2/${path}?key=${encodeURIComponent(API_KEY)}`);
             const cat = classify(resp.status, resp.text);
             if (cat === 'auth') { clearKeyAndReopenSetup(); return; }
             if (handleTornBackoff(cat)) return;
@@ -469,11 +606,14 @@
             let data;
             try { data = JSON.parse(resp.text); } catch (e) { return; }
             if (data.error) return;
-            const members = data.members || {};
+            // v2 returns an array of members; tolerate the v1 id-keyed object too.
+            const members = Array.isArray(data.members) ? data.members
+                : Object.keys(data.members || {}).map((id) => Object.assign({ id: id }, data.members[id]));
             const seen = new Set();
-            Object.keys(members).forEach((pid) => {
-                const st = members[pid] && members[pid].status;
-                if (!st) return;
+            members.forEach((m) => {
+                const st = m && m.status;
+                if (!st || m.id == null) return;
+                const pid = String(m.id);
                 seen.add(pid);
                 factionStatus.set(pid, {
                     state: st.state || null,
@@ -482,10 +622,10 @@
                 });
             });
             Array.from(factionStatus.keys()).forEach((pid) => { if (!seen.has(pid)) factionStatus.delete(pid); });
-            console.log(`[FFBS] Faction status: ${seen.size} member(s) (faction ${currentFactionId || 'own'}).`);
+            log(`Faction status: ${seen.size} member(s) (faction ${currentFactionId || 'own'}).`);
             tickTimers();
         } catch (e) {
-            console.log('[FFBS] Faction status fetch failed.', e);
+            log('Faction status fetch failed.', e);
         } finally {
             factionFetching = false;
         }
@@ -524,7 +664,7 @@
     }
     async function fetchUserStatus(pid) {
         try {
-            const resp = await httpGet(`https://api.torn.com/user/${pid}?selections=profile&key=${encodeURIComponent(API_KEY)}`);
+            const resp = await httpGet(`https://api.torn.com/v2/user/${pid}/basic?key=${encodeURIComponent(API_KEY)}`);
             const cat = classify(resp.status, resp.text);
             if (cat === 'auth') { clearKeyAndReopenSetup(); return; }
             if (handleTornBackoff(cat)) {
@@ -544,19 +684,19 @@
                 userStatus.set(pid, { state: null, until: 0, description: '', ts: Date.now() });
                 return;
             }
-            const st = data.status || {};
+            const st = (data.profile && data.profile.status) || data.status || {};
             userStatus.set(pid, {
                 state: st.state || null,
                 until: Number(st.until) || 0,
                 description: st.description || '',
                 ts: Date.now()
             });
-            document.querySelectorAll(`.ffbs-wrap[${BADGE_ATTR}="${pid}"]`).forEach((wrap) => {
-                applyTimerBadge(wrap, pid);
+            document.querySelectorAll(`a[${BADGE_ATTR}="${pid}"]`).forEach((link) => {
+                applyTimerBadge(link, pid);
             });
         } catch (e) {
             userStatus.set(pid, { state: null, until: 0, description: '', ts: Date.now() });
-            console.log(`[FFBS] User status fetch failed for ${pid}.`, e);
+            log(`User status fetch failed for ${pid}.`, e);
         } finally {
             pendingUserFetch.delete(pid);
         }
@@ -588,14 +728,14 @@
                 const url = `https://ffscouter.com/api/v1/get-stats?key=${encodeURIComponent(API_KEY)}&targets=${batch.join(',')}`;
                 let resp;
                 try { resp = await httpGet(url); }
-                catch (e) { pausedUntil = Date.now() + TEMP_BACKOFF_MS; console.log('[FFBS] Stats fetch network error; backing off.'); break; }
+                catch (e) { pausedUntil = Date.now() + TEMP_BACKOFF_MS; log('Stats fetch network error; backing off.'); break; }
                 const cat = classify(resp.status, resp.text);
-                if (cat === 'auth')      { console.log('[FFBS] Invalid key. Reopening setup.'); clearKeyAndReopenSetup(); break; }
-                if (cat === 'ratelimit') { pausedUntil = Date.now() + RATELIMIT_MS; console.log('[FFBS] Rate limited; backing off.'); break; }
-                if (cat === 'temp')      { pausedUntil = Date.now() + TEMP_BACKOFF_MS; console.log('[FFBS] FFScouter temp error; backing off.'); break; }
+                if (cat === 'auth')      { log('Invalid key. Reopening setup.'); clearKeyAndReopenSetup(); break; }
+                if (cat === 'ratelimit') { pausedUntil = Date.now() + RATELIMIT_MS; log('Rate limited; backing off.'); break; }
+                if (cat === 'temp')      { pausedUntil = Date.now() + TEMP_BACKOFF_MS; log('FFScouter temp error; backing off.'); break; }
                 let data;
                 try { data = JSON.parse(resp.text); }
-                catch (e) { pausedUntil = Date.now() + TEMP_BACKOFF_MS; console.log('[FFBS] Bad FFScouter JSON; backing off.'); break; }
+                catch (e) { pausedUntil = Date.now() + TEMP_BACKOFF_MS; log('Bad FFScouter JSON; backing off.'); break; }
                 if (data && data.error) {
                     if (String(data.error).toLowerCase().includes('key')) { clearKeyAndReopenSetup(); }
                     else { pausedUntil = Date.now() + TEMP_BACKOFF_MS; }
@@ -623,7 +763,8 @@
                     }
                     pending.delete(pid);
                 });
-                applyAllResolved();
+                applyAllResolved(new Set(batch));
+                saveStatsCacheSoon();
             }
         } finally {
             fetching = false;
@@ -632,46 +773,34 @@
 
     /* =======================================================================
      * BADGE RENDERING
+     * Badges are appended *inside* the player link, which is marked with
+     * data-ffbs (CSS makes it position:relative). The link itself is never
+     * moved or re-parented, so React's DOM bookkeeping stays intact; if React
+     * replaces the link, the MutationObserver sees the new one and re-badges it.
      * ===================================================================== */
-    function ensureWrapper(link) {
-        if (link.parentElement && link.parentElement.classList.contains('ffbs-wrap')) return link.parentElement;
-        if (link.classList.contains('ffbs-wrap')) return link;
-        try {
-            const span = document.createElement('span');
-            span.className = 'ffbs-wrap';
-            link.parentNode.insertBefore(span, link);
-            span.appendChild(link);
-            return span;
-        } catch (e) {
-            link.classList.add('ffbs-wrap');
-            return link;
-        }
-    }
-    function applyBadges(wrap, pid) {
+    function applyBadges(link, pid) {
         const data = statsCache.get(pid);
         if (!data) return;
         const ffKnown = data.ff != null && !isNaN(data.ff);
         const bsKnown = data.bsRaw != null && !isNaN(data.bsRaw);
+        link.querySelectorAll('.ffbs-badge:not(.ffbs-timer)').forEach((b) => b.remove());
+        link.setAttribute(BADGE_ATTR, pid);
         if (S.HIDE_WHEN_NO_DATA && !ffKnown && !bsKnown) {
-            wrap.querySelectorAll('.ffbs-badge:not(.ffbs-timer)').forEach((b) => b.remove());
-            wrap.setAttribute(BADGE_ATTR, pid);
-            applyTimerBadge(wrap, pid);
+            applyTimerBadge(link, pid);
             return;
         }
-        wrap.querySelectorAll('.ffbs-badge:not(.ffbs-timer)').forEach((b) => b.remove());
         const ff = document.createElement('span');
         ff.className = `ffbs-badge ffbs-ff ${ffTier(data.ff)}`;
         ff.textContent = formatFF(data.ff);
         ff.title = `FairFight: ${formatFF(data.ff)}`;
-        wrap.appendChild(ff);
+        link.appendChild(ff);
         const bs = document.createElement('span');
         bs.className = `ffbs-badge ffbs-bs ${bsTier(data.bsRaw)}`;
         bs.textContent = formatBS(data.bsHuman, data.bsRaw);
         bs.title = `Estimated battle stats: ${formatBS(data.bsHuman, data.bsRaw)}`;
         if (bsKnown) bs.setAttribute('data-bsraw', String(data.bsRaw));
-        wrap.appendChild(bs);
-        wrap.setAttribute(BADGE_ATTR, pid);
-        applyTimerBadge(wrap, pid);
+        link.appendChild(bs);
+        applyTimerBadge(link, pid);
     }
     function recolorBS() {
         document.querySelectorAll('.ffbs-bs[data-bsraw]').forEach((b) => {
@@ -680,26 +809,30 @@
             b.classList.add(bsTier(raw));
         });
     }
-    function applyTimerBadge(wrap, pid) {
+    function hospSoon(remaining) {
+        return remaining > 0 && remaining <= Number(S.HOSP_ALERT_SEC || 0);
+    }
+    function applyTimerBadge(link, pid) {
+        let badge = link.querySelector('.ffbs-timer');
         if (!S.SHOW_NAME_TIMER_BADGE) {
-            const existing = wrap.querySelector('.ffbs-timer');
-            if (existing) existing.remove();
+            if (badge) badge.remove();
             return;
         }
-        const status = resolveStatus(pid, wrap);
-        let badge = wrap.querySelector('.ffbs-timer');
+        const status = resolveStatus(pid, link);
         const remove = () => { if (badge) badge.remove(); };
         const ensure = (cls) => {
-            if (!badge) { badge = document.createElement('span'); wrap.appendChild(badge); }
-            badge.className = `ffbs-badge ffbs-timer ${cls}`;
+            if (!badge) { badge = document.createElement('span'); link.appendChild(badge); }
+            const want = `ffbs-badge ffbs-timer ${cls}`;
+            if (badge.className !== want) badge.className = want;
             return badge;
         };
+        const setText = (t) => { if (badge.textContent !== t) badge.textContent = t; };
         if (!status || !status.state) { remove(); return; }
         const remaining = status.until ? status.until - Math.floor(Date.now() / 1000) : 0;
         if (TIMER_STATES.includes(status.state)) {
             if (remaining <= 0) { remove(); return; }
-            ensure('ffbs-timer-hosp');
-            badge.textContent = formatDuration(remaining);
+            ensure('ffbs-timer-hosp' + (hospSoon(remaining) ? ' ffbs-soon' : ''));
+            setText(formatDuration(remaining));
             badge.title = `${status.state}: out in ${badge.textContent}`;
             return;
         }
@@ -707,26 +840,36 @@
             const t = parseTravel(status);
             ensure('ffbs-timer-travel');
             if (t.direction === 'abroad' || remaining <= 0) {
-                badge.textContent = t.abbr;
+                setText(t.abbr);
                 badge.title = status.description || `Abroad: ${t.country || t.abbr}`;
             } else {
-                badge.textContent = `${t.abbr} ${formatDuration(remaining)}`;
+                setText(`${t.abbr} ${formatDuration(remaining)}`);
                 badge.title = `${status.description} — lands in ${formatDuration(remaining)}`;
             }
             return;
         }
         remove();
     }
-    function applyAllResolved() {
+    function playerLinks() {
         const skipSel = S.SKIP_CHAT ? SKIP_CONTAINERS.join(',') : null;
+        const out = [];
         document.querySelectorAll('a[href*="XID="]').forEach((link) => {
             const m = link.href.match(/XID=(\d+)/);
-            if (!m || !statsCache.has(m[1])) return;
+            if (!m) return;
             if (skipSel && link.closest(skipSel)) return;
-            const wrap = ensureWrapper(link);
-            if (!wrap || wrap.getAttribute(BADGE_ATTR) === m[1]) return;
-            applyBadges(wrap, m[1]);
+            out.push({ link: link, pid: m[1] });
         });
+        return out;
+    }
+    // Badge every link we have data for. Pids in `refreshed` were just fetched,
+    // so their already-badged links are redrawn with the new values too.
+    function applyAllResolved(refreshed) {
+        playerLinks().forEach(({ link, pid }) => {
+            if (!statsCache.has(pid)) return;
+            if (link.getAttribute(BADGE_ATTR) === pid && !(refreshed && refreshed.has(pid))) return;
+            applyBadges(link, pid);
+        });
+        applyListSort();
     }
 
     /* =======================================================================
@@ -743,25 +886,161 @@
         if (status.state === 'Abroad') return parseTravel(status).abbr;
         return null;
     }
+    function rowPid(row) {
+        const a = row.querySelector('a[href*="XID="]');
+        const m = a && a.href.match(/XID=(\d+)/);
+        return m ? m[1] : null;
+    }
     function enhanceStatusCells() {
         if (!S.ENHANCE_STATUS_CELL) return;
         document.querySelectorAll('.table-cell.status span.ellipsis').forEach((span) => {
             const row = span.closest('.table-row');
             if (!row) return;
-            const a = row.querySelector('a[href*="XID="]');
-            if (!a) return;
-            const m = a.href.match(/XID=(\d+)/);
-            if (!m) return;
-            const text = buildStatusText(factionStatus.get(m[1]));
+            const pid = rowPid(row);
+            if (!pid) return;
+            const status = factionStatus.get(pid);
+            const text = buildStatusText(status);
             if (text == null) {
                 if (span.hasAttribute('data-ffbs-orig')) {
                     span.textContent = span.getAttribute('data-ffbs-orig');
                     span.removeAttribute('data-ffbs-orig');
                 }
+                span.removeAttribute('data-ffbs-soon');
                 return;
             }
             if (span.getAttribute('data-ffbs-orig') == null) span.setAttribute('data-ffbs-orig', span.textContent);
             if (span.textContent !== text) span.textContent = text;
+            const soon = status.state === 'Hospital' &&
+                hospSoon(status.until - Math.floor(Date.now() / 1000));
+            if (soon) span.setAttribute('data-ffbs-soon', '1');
+            else span.removeAttribute('data-ffbs-soon');
+        });
+    }
+
+    /* =======================================================================
+     * FACTION LIST SORT / FILTER
+     * Rows are never moved: the list container becomes a flex column and each
+     * row gets a CSS `order`; filtered rows get a data attribute that hides
+     * them. Turning the feature off just removes those styles/attributes.
+     * ===================================================================== */
+    const SORT_MODES = [
+        { key: 'default', label: 'Default' },
+        { key: 'ff',      label: 'FF ↓' },
+        { key: 'bs',      label: 'BS ↑' },
+        { key: 'hosp',    label: 'Hosp ↑' },
+    ];
+    function hospRank(st) {
+        if (!st || !st.state) return 3e9;
+        if (st.state === 'Okay') return 0;
+        if (st.state === 'Hospital') {
+            const r = (st.until || 0) - Math.floor(Date.now() / 1000);
+            return r > 0 ? 1 + r : 0;
+        }
+        if (st.state === 'Traveling' || st.state === 'Abroad') return 1e9;
+        return 2e9; // Jail, Federal, Fallen…
+    }
+    function memberListGroups() {
+        const groups = new Map(); // container -> rows[]
+        document.querySelectorAll('.table-row').forEach((row) => {
+            if (!row.querySelector('.table-cell.status') || !rowPid(row)) return;
+            const c = row.parentElement;
+            if (!c) return;
+            if (!groups.has(c)) groups.set(c, []);
+            groups.get(c).push(row);
+        });
+        return groups;
+    }
+    function resetListSort() {
+        document.querySelectorAll('.ffbs-toolbar').forEach((b) => b.remove());
+        document.querySelectorAll('[data-ffbs-sorted]').forEach((c) => c.removeAttribute('data-ffbs-sorted'));
+        document.querySelectorAll('[data-ffbs-hidden]').forEach((r) => r.removeAttribute('data-ffbs-hidden'));
+        document.querySelectorAll('.table-row[data-ffbs-order]').forEach((r) => {
+            r.style.order = '';
+            r.removeAttribute('data-ffbs-order');
+        });
+    }
+    function ensureToolbar(container) {
+        const prev = container.previousElementSibling;
+        if (prev && prev.classList.contains('ffbs-toolbar')) return prev;
+        const bar = document.createElement('div');
+        bar.className = 'ffbs-toolbar';
+        bar.innerHTML = SORT_MODES.map((m) => `<button type="button" data-sort="${m.key}">${m.label}</button>`).join('') +
+            '<label><input type="checkbox" data-okay /> Okay only</label>';
+        bar.addEventListener('click', (e) => {
+            const btn = e.target.closest('button[data-sort]');
+            if (!btn) return;
+            S.LIST_SORT = btn.getAttribute('data-sort');
+            saveSettings();
+            applyListSort();
+        });
+        bar.querySelector('input[data-okay]').addEventListener('change', (e) => {
+            S.LIST_ONLY_OKAY = e.target.checked;
+            saveSettings();
+            applyListSort();
+        });
+        try { container.parentNode.insertBefore(bar, container); } catch (e) { return null; }
+        return bar;
+    }
+    function applyListSort() {
+        if (!S.SORT_TOOLBAR || !/factions\.php/i.test(location.pathname)) {
+            if (document.querySelector('.ffbs-toolbar, [data-ffbs-sorted], [data-ffbs-hidden]')) resetListSort();
+            return;
+        }
+        memberListGroups().forEach((rows, container) => {
+            const bar = ensureToolbar(container);
+            if (bar) {
+                bar.querySelectorAll('button[data-sort]').forEach((b) =>
+                    b.classList.toggle('active', b.getAttribute('data-sort') === S.LIST_SORT));
+                const cb = bar.querySelector('input[data-okay]');
+                if (cb.checked !== !!S.LIST_ONLY_OKAY) cb.checked = !!S.LIST_ONLY_OKAY;
+            }
+
+            const items = rows.map((row, i) => {
+                const pid = rowPid(row);
+                return { row: row, i: i, st: factionStatus.get(pid), stats: statsCache.get(pid) };
+            });
+
+            items.forEach((it) => {
+                const hide = S.LIST_ONLY_OKAY && it.st && it.st.state && it.st.state !== 'Okay';
+                if (hide) { if (!it.row.hasAttribute('data-ffbs-hidden')) it.row.setAttribute('data-ffbs-hidden', '1'); }
+                else if (it.row.hasAttribute('data-ffbs-hidden')) it.row.removeAttribute('data-ffbs-hidden');
+            });
+
+            if (S.LIST_SORT === 'default') {
+                container.removeAttribute('data-ffbs-sorted');
+                items.forEach((it) => {
+                    if (it.row.hasAttribute('data-ffbs-order')) { it.row.style.order = ''; it.row.removeAttribute('data-ffbs-order'); }
+                });
+                return;
+            }
+
+            const num = (v) => (v == null || isNaN(v) ? null : Number(v));
+            const cmp = {
+                // Highest FF first; unknown last.
+                ff: (a, b) => {
+                    const x = num(a.stats && a.stats.ff), y = num(b.stats && b.stats.ff);
+                    if (x == null || y == null) return (x == null) - (y == null);
+                    return y - x;
+                },
+                // Weakest estimated BS first; unknown last.
+                bs: (a, b) => {
+                    const x = num(a.stats && a.stats.bsRaw), y = num(b.stats && b.stats.bsRaw);
+                    if (x == null || y == null) return (x == null) - (y == null);
+                    return x - y;
+                },
+                // Okay first, then shortest hospital time, then travel, then the rest.
+                hosp: (a, b) => hospRank(a.st) - hospRank(b.st),
+            }[S.LIST_SORT];
+            if (!cmp) return;
+
+            container.setAttribute('data-ffbs-sorted', '1');
+            items.slice().sort((a, b) => cmp(a, b) || a.i - b.i).forEach((it, idx) => {
+                const o = String(idx);
+                if (it.row.getAttribute('data-ffbs-order') !== o) {
+                    it.row.style.order = o;
+                    it.row.setAttribute('data-ffbs-order', o);
+                }
+            });
         });
     }
 
@@ -771,34 +1050,47 @@
     function scanPage() {
         if (!API_KEY) return;
         if (getViewedFactionId() !== currentFactionId) fetchFactionStatuses();
-        const skipSel = S.SKIP_CHAT ? SKIP_CONTAINERS.join(',') : null;
-        document.querySelectorAll('a[href*="XID="]').forEach((link) => {
-            const m = link.href.match(/XID=(\d+)/);
-            if (!m) return;
-            const pid = m[1];
-            if (skipSel && link.closest(skipSel)) return;
-            const wrap = ensureWrapper(link);
+        const ttl = statsTtlMs();
+        playerLinks().forEach(({ link, pid }) => {
             const cached = statsCache.get(pid);
-            const fresh  = cached && (Date.now() - (cached.ts || 0) < STATS_TTL_MS);
-            if (wrap && wrap.getAttribute(BADGE_ATTR) === pid && fresh) return;
-            if (!wrap) return;
-            if (fresh) {
-                applyBadges(wrap, pid);
-            } else {
-                if (cached) applyBadges(wrap, pid);
-                pending.add(pid);
-            }
+            const fresh  = cached && (Date.now() - (cached.ts || 0) < ttl);
+            if (cached && link.getAttribute(BADGE_ATTR) !== pid) applyBadges(link, pid);
+            if (!fresh) pending.add(pid);
         });
         if (pending.size > 0) scheduleFetch();
+        applyListSort();
+    }
+    function scheduleScan() {
+        if (scanDebounce) return;
+        scanDebounce = setTimeout(() => { scanDebounce = null; scanPage(); }, SCAN_DEBOUNCE_MS);
+    }
+    // Our own UI nodes; mutations that only add these are ignored so badge
+    // updates can't trigger a rescan loop.
+    const OWN_NODES = '.ffbs-badge, .ffbs-toolbar, #ffbs-setup, #ffbs-config, #ffbs-gear, #ffbs-reopen, #ffbs-styles';
+    function startObserver() {
+        if (observer || typeof MutationObserver !== 'function') return;
+        observer = new MutationObserver((mutations) => {
+            for (const mu of mutations) {
+                for (const n of mu.addedNodes) {
+                    if (n.nodeType === 1 && !n.matches(OWN_NODES)) { scheduleScan(); return; }
+                }
+            }
+        });
+        observer.observe(document.body || document.documentElement, { childList: true, subtree: true });
+    }
+    function stopObserver() {
+        if (observer) { observer.disconnect(); observer = null; }
+        if (scanDebounce) { clearTimeout(scanDebounce); scanDebounce = null; }
     }
     function tickTimers() {
         if (S.SHOW_NAME_TIMER_BADGE) {
-            document.querySelectorAll(`.ffbs-wrap[${BADGE_ATTR}]`).forEach((wrap) => {
-                const pid = wrap.getAttribute(BADGE_ATTR);
-                if (pid) applyTimerBadge(wrap, pid);
+            document.querySelectorAll(`a[${BADGE_ATTR}]`).forEach((link) => {
+                const pid = link.getAttribute(BADGE_ATTR);
+                if (pid) applyTimerBadge(link, pid);
             });
         }
         enhanceStatusCells();
+        if (S.LIST_SORT === 'hosp' || S.LIST_ONLY_OKAY) applyListSort();
     }
 
     /* =======================================================================
@@ -867,17 +1159,29 @@
                     return;
                 }
             } catch (e) { /* non-JSON 200 — accept cautiously */ }
-            try { localStorage.setItem(LS_KEY, key); } catch (e) {}
+            keySet(key);
+            // FF is relative to the key owner's stats: a different key means the
+            // cached FF values and own BS belong to someone else — drop them.
+            const owner = hashKey(key);
+            try {
+                if (localStorage.getItem(LS_CACHE_OWNER) !== owner) {
+                    localStorage.removeItem(LS_STATS);
+                    localStorage.removeItem(LS_OWN_BS);
+                    localStorage.setItem(LS_CACHE_OWNER, owner);
+                    statsCache.clear();
+                }
+            } catch (e) {}
             API_KEY = key;
             setMsg('Key verified. Starting…', 'ffbs-info');
-            console.log('[FFBS] API key verified and saved.');
+            log('API key verified and saved.');
             setTimeout(() => { overlay.remove(); startMain(); }, 500);
         }
         btn.addEventListener('click', doSave);
         input.addEventListener('keydown', (e) => { if (e.key === 'Enter') doSave(); });
     }
     function clearKeyAndReopenSetup() {
-        try { localStorage.removeItem(LS_KEY); } catch (e) {}
+        keyDel();
+        stopObserver();
         API_KEY = null;
         myBattleStat = null;
         ownStatsGaveUp = false;
@@ -928,6 +1232,11 @@
                 ${toggleRow('ENHANCE_STATUS_CELL', 'Rewrite faction Status column', 'Live timers in the member list')}
                 ${toggleRow('SKIP_CHAT', 'Skip chat box', "Don't badge names inside chat")}
                 ${toggleRow('HIDE_WHEN_NO_DATA', 'Hide empty badges', 'Draw nothing when FF & BS unknown')}
+                ${toggleRow('SORT_TOOLBAR', 'Faction list sort bar', 'Sort by FF / BS / hospital, filter Okay')}
+                ${numRow('HOSP_ALERT_SEC', 'Hospital alert (sec)', 'Pulse when this little time is left (0 = off)', '10')}
+
+                <div class="ffbs-section">Cache</div>
+                ${numRow('CACHE_HOURS', 'Keep FF/BS data (hours)', 'Reused without refetching (72 = 3 days)', '1')}
 
                 <div class="ffbs-section">FairFight colour thresholds</div>
                 ${numRow('FF_GREEN', 'Green below', 'FF under this = green', '0.05')}
@@ -938,6 +1247,9 @@
                 <p class="ffbs-sub" style="margin:0 0 4px;">Multiples of your own total BS.</p>
                 ${numRow('BS_YELLOW', 'Yellow up to', 'e.g. 1.10 = +10% over you', '0.05')}
                 ${numRow('BS_ORANGE', 'Orange up to', 'e.g. 1.25 = +25% over you', '0.05')}
+
+                <div class="ffbs-section">Advanced</div>
+                ${toggleRow('DEBUG', 'Debug logging', 'Verbose messages in the browser console')}
 
                 <div class="ffbs-actions">
                     <button class="btn-save"  id="cfg-save">Save</button>
@@ -956,23 +1268,32 @@
 
         const savedMsg = overlay.querySelector('#cfg-saved');
 
-        // Read every field from the DOM into S.
+        // Read every field from the DOM into a copy of S. Returns the new
+        // settings, or an error string if the thresholds are out of order.
         const collect = () => {
-            const boolKeys = ['SHOW_NAME_TIMER_BADGE', 'ENHANCE_STATUS_CELL', 'SKIP_CHAT', 'HIDE_WHEN_NO_DATA'];
-            const numKeys  = ['FF_GREEN', 'FF_YELLOW', 'FF_ORANGE', 'BS_YELLOW', 'BS_ORANGE'];
-            boolKeys.forEach((k) => { const el = overlay.querySelector(`#cfg-${k}`); if (el) S[k] = el.checked; });
+            const next = Object.assign({}, S);
+            const boolKeys = ['SHOW_NAME_TIMER_BADGE', 'ENHANCE_STATUS_CELL', 'SKIP_CHAT', 'HIDE_WHEN_NO_DATA', 'SORT_TOOLBAR', 'DEBUG'];
+            const numKeys  = ['FF_GREEN', 'FF_YELLOW', 'FF_ORANGE', 'BS_YELLOW', 'BS_ORANGE', 'CACHE_HOURS', 'HOSP_ALERT_SEC'];
+            boolKeys.forEach((k) => { const el = overlay.querySelector(`#cfg-${k}`); if (el) next[k] = el.checked; });
             numKeys.forEach((k) => {
                 const el = overlay.querySelector(`#cfg-${k}`);
-                if (el) { const v = parseFloat(el.value); if (!isNaN(v) && v >= 0) S[k] = v; }
+                if (el) { const v = parseFloat(el.value); if (!isNaN(v) && v >= 0) next[k] = v; }
             });
+            if (!(next.FF_GREEN < next.FF_YELLOW && next.FF_YELLOW < next.FF_ORANGE))
+                return 'FF thresholds must increase: green < yellow < orange.';
+            if (!(next.BS_YELLOW <= next.BS_ORANGE))
+                return 'BS thresholds: yellow must not exceed orange.';
+            if (!(next.CACHE_HOURS > 0)) return 'Cache hours must be above 0.';
+            return next;
         };
 
         const applyLive = () => {
             // Re-tint existing badges and rebuild timers/status without a page reload.
-            document.querySelectorAll(`.ffbs-wrap[${BADGE_ATTR}]`).forEach((wrap) => {
-                const pid = wrap.getAttribute(BADGE_ATTR);
-                if (pid) applyBadges(wrap, pid);
+            document.querySelectorAll(`a[${BADGE_ATTR}]`).forEach((link) => {
+                const pid = link.getAttribute(BADGE_ATTR);
+                if (pid) applyBadges(link, pid);
             });
+            applyListSort();
             // If status column toggle turned off, restore original Torn text.
             if (!S.ENHANCE_STATUS_CELL) {
                 document.querySelectorAll('.table-cell.status span.ellipsis[data-ffbs-orig]').forEach((span) => {
@@ -984,7 +1305,12 @@
         };
 
         overlay.querySelector('#cfg-save').addEventListener('click', () => {
-            collect();
+            const next = collect();
+            if (typeof next === 'string') {
+                savedMsg.textContent = next;
+                return;
+            }
+            S = next;
             saveSettings();
             applyLive();
             savedMsg.textContent = 'Saved ✓';
@@ -1023,22 +1349,25 @@
         if (tickTimer) clearInterval(tickTimer);
         tickTimer = setInterval(tickTimers, TIMER_TICK_INTERVAL);
         scanPage();
+        startObserver();
         if (scanTimer) clearInterval(scanTimer);
-        scanTimer = setInterval(scanPage, SCAN_INTERVAL);
-        console.log(`[FFBS] Running. Re-scan every ${SCAN_INTERVAL / 1000}s.`);
+        scanTimer = setInterval(scanPage, FALLBACK_SCAN_INTERVAL);
+        log('Running (MutationObserver + fallback scan every ' + (FALLBACK_SCAN_INTERVAL / 1000) + 's).');
     }
 
     function init() {
         loadSettings();
         injectStyles();
-        let stored = null;
-        try { stored = localStorage.getItem(LS_KEY); } catch (e) {}
-        if (stored && stored.trim()) {
-            API_KEY = stored.trim();
-            console.log('[FFBS] Stored key found. Starting.');
+        loadStatsCache();
+        const stored = keyGet();
+        if (stored) {
+            API_KEY = stored;
+            // Caches written before 2.3.0 have no owner tag: adopt them.
+            try { if (!localStorage.getItem(LS_CACHE_OWNER)) localStorage.setItem(LS_CACHE_OWNER, hashKey(stored)); } catch (e) {}
+            log('Stored key found. Starting.');
             startMain();
         } else {
-            console.log('[FFBS] No stored key. Showing setup card.');
+            log('No stored key. Showing setup card.');
             showSetupCard();
         }
     }
