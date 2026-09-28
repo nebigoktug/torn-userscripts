@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Torn Flower Set Helper
 // @namespace    https://github.com/nebigoktug
-// @version      2.0.1
-// @description  Counts your flowers, shows how many museum flower sets you can make and what's missing for a target, where each flower is sold abroad, and what the missing ones cost on the item market. Display only, no automation.
+// @version      2.1.0
+// @description  Counts your flowers, shows how many museum flower sets you can make and what's missing for a target, where each flower is sold abroad, what the missing ones cost on the item market, and the profit of exchanging sets for points. Display only, no automation.
 // @author       Nebigoktug
 // @license      MIT
 // @supportURL   https://github.com/nebigoktug/torn-userscripts/issues
@@ -32,7 +32,7 @@
     // Torn PDA may inject on any URL containing "torn"; only run on the game.
     if (!/^(www\.)?torn\.com$/i.test(location.hostname)) return;
 
-    const VERSION  = '2.0.1';
+    const VERSION  = '2.1.0';
     const REPO_URL = 'https://github.com/nebigoktug/torn-userscripts';
     const LS_KEY   = 'tfs_api_key';
     const LS_PREFS = 'tfs_prefs';
@@ -56,6 +56,7 @@
     ];
 
     const DEFAULT_PREFS = { target: 10, showPrices: true };
+    const POINTS_PER_SET = 10;   // "You exchanged 3x Exotic Flower Set to the museum for 30 points"
 
     // ------------------------------------------------------------ storage
     const lsGet = (k) => { try { return localStorage.getItem(k); } catch (e) { return null; } };
@@ -144,6 +145,20 @@
         lsSet(LS_PRICES, JSON.stringify(cache));
         return listings;
     }
+    // Cheapest points-market listing (price per point); cached with the item prices.
+    async function fetchPointPrice(key) {
+        const cache = priceCache();
+        const c = cache.points;
+        if (c && Date.now() - c.ts < PRICE_TTL_MS) return c.price;
+        const data = await api('market/pointsmarket', key);
+        const list = Array.isArray(data.pointsmarket) ? data.pointsmarket : Object.values(data.pointsmarket || {});
+        const costs = list.map((l) => Number(l.cost)).filter((n) => n > 0);
+        const price = costs.length ? Math.min(...costs) : null;
+        cache.points = { ts: Date.now(), price };
+        lsSet(LS_PRICES, JSON.stringify(cache));
+        return price;
+    }
+
     // Cost of buying `qty` from the cheapest listings. `partial` means the
     // listings we got didn't cover the whole quantity (cost is then a floor).
     function costFor(listings, qty) {
@@ -247,6 +262,19 @@
         #tfs-overlay .tfs-note { font-size: 12px; color: var(--tfs-muted) !important; margin-top: 10px; line-height: 1.5; }
         #tfs-overlay .tfs-msg { padding: 10px; border-radius: 8px; background: var(--tfs-bg2); color: var(--tfs-muted) !important; text-align: center; }
         #tfs-overlay .tfs-msg.err { color: var(--tfs-bad) !important; }
+        #tfs-overlay .tfs-points { background: var(--tfs-bg2); border: 1px solid var(--tfs-border); border-radius: 8px;
+            padding: 6px 10px; margin-bottom: 10px; }
+        #tfs-overlay .tfs-prow { display: flex; align-items: baseline; justify-content: space-between; gap: 8px;
+            padding: 4px 0; font-size: 13px; }
+        #tfs-overlay .tfs-prow span { color: var(--tfs-muted) !important; }
+        #tfs-overlay .tfs-prow b { font-variant-numeric: tabular-nums; font-weight: 800; white-space: nowrap; }
+        #tfs-overlay .tfs-prow i { font-style: normal; font-size: 11px; color: var(--tfs-muted) !important; margin-left: 5px; }
+        #tfs-overlay .tfs-prow span i { display: block; margin-left: 0; }
+        #tfs-overlay .tfs-prow.tfs-big { border-top: 1px solid var(--tfs-border); margin-top: 4px; padding-top: 8px; }
+        #tfs-overlay .tfs-prow.tfs-big b { font-size: 18px; }
+        #tfs-overlay b.tfs-pos { color: var(--tfs-good) !important; }
+        #tfs-overlay b.tfs-neg { color: var(--tfs-bad) !important; }
+        #tfs-overlay .tfs-points .tfs-msg { background: transparent; padding: 6px; }
         #tfs-overlay .tfs-tos { margin-top: 12px; }
         #tfs-overlay .tfs-tos table { width: 100%; border-collapse: collapse; font-size: 11px; }
         #tfs-overlay .tfs-tos th, #tfs-overlay .tfs-tos td { text-align: left; vertical-align: top; padding: 4px;
@@ -391,6 +419,12 @@
                     renderTable(out, rows, sets, target, { total, partial });
                     if (!wasCached) await sleep(REQUEST_GAP_MS);
                 }
+                // Points side of the trade: what a set is worth at the museum.
+                const pointPrice = await fetchPointPrice(key);
+                if (token !== refreshToken) return;
+                const fullSet = rows.every((r) => r.cheapest != null)
+                    ? rows.reduce((s, r) => s + r.cheapest, 0) : null;
+                renderTable(out, rows, sets, target, { total, partial, pointPrice, fullSet });
             }
         } catch (e) {
             if (token !== refreshToken) return;
@@ -399,6 +433,31 @@
         } finally {
             if (token === refreshToken && btn && btn.isConnected) { btn.disabled = false; btn.textContent = 'Refresh'; }
         }
+    }
+
+    // Profit / loss of turning flowers into museum points.
+    function pointsBlock(cost, target) {
+        if (!cost || cost.pointPrice === undefined) {
+            return '<div class="tfs-points"><div class="tfs-msg">Points price loading…</div></div>';
+        }
+        if (cost.pointPrice == null) {
+            return '<div class="tfs-points"><div class="tfs-msg">No points-market listings found.</div></div>';
+        }
+        const setValue = POINTS_PER_SET * cost.pointPrice;
+        const signed = (n, approx) => `<b class="${n >= 0 ? 'tfs-pos' : 'tfs-neg'}">${approx}${n >= 0 ? '+' : '−'}${money(Math.abs(n))}</b>`;
+        // Owned flowers count as free here: this is the return on the cash you'd spend.
+        const profit = target * setValue - cost.total;
+        // A "+" total means listings ran out, so the real cost is higher and profit lower.
+        const approx = cost.partial ? '≤ ' : '';
+        const perSet = cost.fullSet != null ? setValue - cost.fullSet : null;
+        return `
+            <div class="tfs-points">
+                <div class="tfs-prow"><span>Point price</span><b>${money(cost.pointPrice)}</b></div>
+                <div class="tfs-prow"><span>Set value (${POINTS_PER_SET} pts)</span><b>${money(setValue)}</b></div>
+                <div class="tfs-prow"><span>Market set cost</span><b>${cost.fullSet != null ? money(cost.fullSet) : '—'}</b></div>
+                <div class="tfs-prow"><span>Buy a full set &amp; exchange</span>${perSet != null ? signed(perSet, '') + '<i>per set</i>' : '<b>—</b>'}</div>
+                <div class="tfs-prow tfs-big"><span>Profit to ${target} sets<i>buying only what's missing</i></span>${signed(profit, approx)}</div>
+            </div>`;
     }
 
     function renderTable(out, rows, sets, target, cost) {
@@ -411,6 +470,7 @@
                 <div class="tfs-stat"><b>${missingTotal}</b><span>Flowers missing</span></div>
                 <div class="tfs-stat"><b>${showPrices ? costCell : '—'}</b><span>Cost to ${target}</span></div>
             </div>
+            ${showPrices ? pointsBlock(cost, target) : ''}
             <table class="tfs-table">
                 <tr><th>Flower</th><th class="num">Have</th><th class="num">Need</th>
                     ${showPrices ? '<th class="num">Cheapest</th><th class="num">Cost</th>' : ''}</tr>
