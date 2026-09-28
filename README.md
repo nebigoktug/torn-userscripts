@@ -10,7 +10,7 @@ Torn City userscripts.
 
 ## Torn FF/BS Badges
 
-**Install:** open the [raw script](https://raw.githubusercontent.com/nebigoktug/torn-userscripts/main/Torn_FFBS_Badges.user.js) with Tampermonkey / Violentmonkey, or paste that URL into Torn PDA's userscripts screen.
+**Install:** from [Greasy Fork](https://greasyfork.org/en/scripts/597816-torn-ff-bs-badges) (recommended), or open the [raw script](https://raw.githubusercontent.com/nebigoktug/torn-userscripts/main/Torn_FFBS_Badges.user.js) with Tampermonkey / Violentmonkey. On Torn PDA, paste either install URL into the userscripts screen.
 
 Needs a Torn API key registered at [ffscouter.com](https://ffscouter.com). Full feature list and the Torn API ToS table are in [docs/greasyfork-ffbs-badges.md](docs/greasyfork-ffbs-badges.md).
 
