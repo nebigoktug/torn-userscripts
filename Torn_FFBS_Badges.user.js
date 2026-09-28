@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn FF/BS Badges
 // @namespace    https://github.com/tornffbs
-// @version      2.4.0
+// @version      2.5.0
 // @description  Shows FairFight + estimated Battle Stat badges next to player names on Torn. On faction pages it also adds a live hospital countdown and travel info, can rewrite the member-list Status column with live timers, and can sort/filter the member list. Includes an in-page settings panel (⚙). Works on Torn PDA and desktop Tampermonkey.
 // @author       Nebigoktug
 // @match        https://www.torn.com/*
@@ -29,6 +29,8 @@
     /* =======================================================================
      * CONFIG DEFAULTS  — user-overridable ones live in SETTINGS (⚙ panel)
      * ===================================================================== */
+    const VERSION        = '2.5.0';           // keep in sync with @version
+    const REPO_URL       = 'https://github.com/nebigoktug/torn-userscripts';
     const LS_KEY         = 'ffbs_api_key';    // where the key is stored locally
     const LS_SETTINGS    = 'ffbs_settings';   // where the ⚙ panel settings live
     const LS_STATS       = 'ffbs_stats_cache';// persistent FFScouter cache
@@ -58,6 +60,10 @@
         SORT_TOOLBAR:          true,   // sort/filter bar above faction member lists
         HIDE_OWN_FACTION:      true,   // no FF/BS badges on your own faction members
         DEBUG:                 false,  // verbose console logging
+        // Appearance
+        BADGE_STYLE: 'classic',        // classic | solid | bright
+        BADGE_SIZE:  's',              // s | m | l
+        THEME:       'auto',           // auto (follow Torn) | dark | light
         // Cache
         CACHE_HOURS: 72,               // how long FFScouter data is reused before refetch
         // Hospital: highlight when this many seconds (or fewer) remain
@@ -377,6 +383,69 @@
     }
 
     /* =======================================================================
+     * BADGE STYLE / SIZE / THEME  (user-selectable; applied as attributes on
+     * <html>, so switching is instant and needs no badge re-render)
+     * ===================================================================== */
+    const BADGE_STYLES = {
+        classic: { label: 'Classic', css: 'background-color: var(--ffbs-f); color: #fff; border-color: var(--ffbs-c);' +
+            'text-shadow: -1px -1px 0 #000, 1px -1px 0 #000, -1px 1px 0 #000, 1px 1px 0 #000;' },
+        solid:   { label: 'Solid dark', css: 'background-color: rgba(18,20,24,0.92); color: var(--ffbs-c);' +
+            'border-color: var(--ffbs-c); text-shadow: none;' },
+        bright:  { label: 'Bright', css: 'background-color: var(--ffbs-c); color: #111; border-color: rgba(0,0,0,0.45);' +
+            'text-shadow: none;' },
+    };
+    const BADGE_SIZES = {
+        s: { label: 'Small',  fs: 9,    ff: 16, bsW: 18, bsH: 17, off: -7 },
+        m: { label: 'Medium', fs: 10.5, ff: 19, bsW: 21, bsH: 20, off: -8 },
+        l: { label: 'Large',  fs: 12,   ff: 22, bsW: 24, bsH: 23, off: -9 },
+    };
+    const THEMES = { auto: 'Auto (follow Torn)', dark: 'Dark', light: 'Light' };
+
+    // Rules for every style/size, once for the page (<html data-ffbs-style>)
+    // and once for the settings preview (higher specificity via #ffbs-config).
+    function badgeStyleCss() {
+        const scopes = (attr, key) => [`html[data-ffbs-${attr}="${key}"]`, `#ffbs-config [data-ffbs-p${attr}="${key}"]`];
+        let css = '';
+        Object.keys(BADGE_STYLES).forEach((k) => {
+            scopes('style', k).forEach((sc) => {
+                css += `${sc} .ffbs-ff, ${sc} .ffbs-bs { ${BADGE_STYLES[k].css} }\n`;
+            });
+        });
+        Object.keys(BADGE_SIZES).forEach((k) => {
+            const z = BADGE_SIZES[k];
+            scopes('size', k).forEach((sc) => {
+                css += `${sc} .ffbs-ff { font-size: ${z.fs}px; min-width: ${z.ff}px; height: ${z.ff}px; top: ${z.off}px; right: ${z.off}px; }\n`;
+                css += `${sc} .ffbs-bs { font-size: ${z.fs}px; min-width: ${z.bsW}px; height: ${z.bsH}px; bottom: ${z.off}px; right: ${z.off}px; }\n`;
+            });
+        });
+        return css;
+    }
+    function applyDisplayPrefs() {
+        const root = document.documentElement;
+        root.setAttribute('data-ffbs-style', BADGE_STYLES[S.BADGE_STYLE] ? S.BADGE_STYLE : 'classic');
+        root.setAttribute('data-ffbs-size', BADGE_SIZES[S.BADGE_SIZE] ? S.BADGE_SIZE : 's');
+        if (S.THEME === 'dark' || S.THEME === 'light') root.setAttribute('data-ffbs-theme', S.THEME);
+        else root.removeAttribute('data-ffbs-theme');
+    }
+
+    let toastTimer = null;
+    function toast(msg, isErr) {
+        let el = document.getElementById('ffbs-toast');
+        if (!el) {
+            el = document.createElement('div');
+            el.id = 'ffbs-toast';
+            (document.body || document.documentElement).appendChild(el);
+        }
+        el.textContent = msg;
+        el.classList.toggle('err', !!isErr);
+        // Force a reflow so re-showing restarts the transition.
+        void el.offsetWidth;
+        el.classList.add('show');
+        clearTimeout(toastTimer);
+        toastTimer = setTimeout(() => el.classList.remove('show'), 1800);
+    }
+
+    /* =======================================================================
      * STYLES
      * ===================================================================== */
     function injectStyles() {
@@ -384,11 +453,30 @@
         const style = document.createElement('style');
         style.id = 'ffbs-styles';
         style.textContent = `
-        a[data-ffbs] { position: relative !important; }
+        /* ---- theme tokens: dark by default, light when Torn is in light
+           mode (body without .dark-mode), or forced via the THEME setting ---- */
+        :root {
+            --ffbs-bg: #1f2227; --ffbs-bg2: #15171b; --ffbs-fg: #eee; --ffbs-muted: #9aa0a6;
+            --ffbs-border: #3a3f47; --ffbs-hover: #2c3037; --ffbs-accent: #2ecc40;
+            --ffbs-accent-fg: #0a0a0a; --ffbs-link: #4aa3ff; --ffbs-shadow: rgba(0,0,0,0.6);
+        }
+        body:not(.dark-mode), html[data-ffbs-theme="light"] body {
+            --ffbs-bg: #ffffff; --ffbs-bg2: #f1f3f5; --ffbs-fg: #1d2125; --ffbs-muted: #5f6670;
+            --ffbs-border: #d0d5db; --ffbs-hover: #e7eaee; --ffbs-accent: #22a636;
+            --ffbs-accent-fg: #ffffff; --ffbs-link: #1a73e8; --ffbs-shadow: rgba(0,0,0,0.25);
+        }
+        html[data-ffbs-theme="dark"] body {
+            --ffbs-bg: #1f2227; --ffbs-bg2: #15171b; --ffbs-fg: #eee; --ffbs-muted: #9aa0a6;
+            --ffbs-border: #3a3f47; --ffbs-hover: #2c3037; --ffbs-accent: #2ecc40;
+            --ffbs-accent-fg: #0a0a0a; --ffbs-link: #4aa3ff; --ffbs-shadow: rgba(0,0,0,0.6);
+        }
+
+        /* ---- badges ---- */
+        a[data-ffbs], a[data-ffbs-loading] { position: relative !important; }
         .ffbs-badge {
             position: absolute; z-index: 9999;
             font-size: 9px; line-height: 1; font-weight: 800;
-            font-family: Arial, Helvetica, sans-serif;
+            font-family: Arial, Helvetica, sans-serif; font-variant-numeric: tabular-nums;
             padding: 2px 3px; min-width: 14px; text-align: center; color: #fff;
             text-shadow: -1px -1px 0 #000, 1px -1px 0 #000, -1px 1px 0 #000, 1px 1px 0 #000;
             pointer-events: none; box-sizing: border-box; user-select: none;
@@ -403,11 +491,15 @@
             display: flex; align-items: center; justify-content: center; padding: 0 2px 2px 2px;
             clip-path: polygon(0% 0%, 100% 0%, 100% 62%, 50% 100%, 0% 62%);
         }
-        .ffbs-green  { border-color: #2ecc40; background-color: rgba(46,204,64,0.5); }
-        .ffbs-yellow { border-color: #ffdc00; background-color: rgba(255,220,0,0.5); }
-        .ffbs-orange { border-color: #ff851b; background-color: rgba(255,133,27,0.5); }
-        .ffbs-red    { border-color: #ff4136; background-color: rgba(255,65,54,0.5); }
-        .ffbs-grey   { border-color: #aaaaaa; background-color: rgba(170,170,170,0.5); }
+        /* tier colours as variables; the badge style decides how they're used */
+        .ffbs-green  { --ffbs-c: #2ecc40; --ffbs-f: rgba(46,204,64,0.5); }
+        .ffbs-yellow { --ffbs-c: #ffdc00; --ffbs-f: rgba(255,220,0,0.5); }
+        .ffbs-orange { --ffbs-c: #ff851b; --ffbs-f: rgba(255,133,27,0.5); }
+        .ffbs-red    { --ffbs-c: #ff4136; --ffbs-f: rgba(255,65,54,0.5); }
+        .ffbs-grey   { --ffbs-c: #aaaaaa; --ffbs-f: rgba(170,170,170,0.5); }
+        ${badgeStyleCss()}
+        .ffbs-badge.ffbs-loading { opacity: 0.55; animation: ffbs-pulse 1.4s ease-in-out infinite; }
+
         .ffbs-timer {
             top: -7px; left: -7px; border-radius: 7px; border: 1.5px solid;
             padding: 1px 4px; font-size: 8px; white-space: nowrap;
@@ -422,7 +514,7 @@
         span[data-ffbs-soon] { color: #2ecc40 !important; font-weight: 700;
             animation: ffbs-pulse 1s ease-in-out infinite; }
 
-        /* faction list sort/filter */
+        /* ---- faction list sort/filter ---- */
         [data-ffbs-sorted] { display: flex !important; flex-direction: column !important; }
         [data-ffbs-hidden] { display: none !important; }
 
@@ -431,104 +523,155 @@
         [data-ffbs-war] > .ffbs-war-status { font-size: 12px; white-space: nowrap; }
         .ffbs-war-status[data-ffbs-soon] { color: #2ecc40 !important; font-weight: 700;
             animation: ffbs-pulse 1s ease-in-out infinite; }
+
         .ffbs-toolbar {
-            display: flex; flex-wrap: wrap; align-items: center; gap: 4px;
+            position: sticky; top: 0; z-index: 50;
+            display: flex; flex-wrap: wrap; align-items: center; gap: 6px;
             padding: 5px 6px; margin: 4px 0; font: 11px Arial, Helvetica, sans-serif;
-            background: #1f2227; border: 1px solid #3a3f47; border-radius: 6px; color: #ccc;
+            background: var(--ffbs-bg); border: 1px solid var(--ffbs-border); border-radius: 6px;
+            color: var(--ffbs-fg); box-shadow: 0 2px 6px var(--ffbs-shadow);
         }
-        .ffbs-toolbar button {
-            padding: 3px 8px; font-size: 11px; font-weight: 700; cursor: pointer;
-            background: #15171b; color: #ccc; border: 1px solid #3a3f47; border-radius: 4px;
+        .ffbs-toolbar .ffbs-seg { display: inline-flex; border: 1px solid var(--ffbs-border); border-radius: 5px; overflow: hidden; }
+        .ffbs-toolbar .ffbs-seg button {
+            padding: 4px 9px; font-size: 11px; font-weight: 700; cursor: pointer;
+            background: var(--ffbs-bg2); color: var(--ffbs-fg); border: 0;
+            border-left: 1px solid var(--ffbs-border); transition: background .15s, color .15s;
         }
-        .ffbs-toolbar button.active { background: #2ecc40; color: #0a0a0a; border-color: #2ecc40; }
+        .ffbs-toolbar .ffbs-seg button:first-child { border-left: 0; }
+        .ffbs-toolbar .ffbs-seg button.active { background: var(--ffbs-accent); color: var(--ffbs-accent-fg); }
+        .ffbs-toolbar .ffbs-count { color: var(--ffbs-muted); font-weight: 700; font-variant-numeric: tabular-nums; }
         .ffbs-toolbar label { margin-left: auto; display: flex; align-items: center; gap: 4px; cursor: pointer; }
-        .ffbs-toolbar input { accent-color: #2ecc40; margin: 0; }
-        #ffbs-setup {
-            position: fixed; inset: 0; z-index: 2147483647; background: rgba(0,0,0,0.85);
+        .ffbs-toolbar input { accent-color: var(--ffbs-accent); margin: 0; }
+
+        /* ---- overlays (setup card + settings panel) ---- */
+        @keyframes ffbs-fade { from { opacity: 0; } to { opacity: 1; } }
+        @keyframes ffbs-pop  { from { opacity: 0; transform: translateY(8px) scale(.97); } to { opacity: 1; transform: none; } }
+        #ffbs-setup, #ffbs-config {
+            position: fixed; inset: 0; z-index: 2147483647; background: rgba(0,0,0,0.7);
             display: flex; align-items: center; justify-content: center;
-            font-family: Arial, Helvetica, sans-serif;
+            font-family: Arial, Helvetica, sans-serif; animation: ffbs-fade .15s ease-out;
         }
-        #ffbs-setup .ffbs-card {
-            position: relative; background: #1f2227; color: #eee; width: 320px; max-width: 90vw;
-            padding: 22px; border-radius: 10px; border: 1px solid #3a3f47;
-            box-shadow: 0 8px 30px rgba(0,0,0,0.6);
+        #ffbs-setup .ffbs-card, #ffbs-config .ffbs-card {
+            position: relative; background: var(--ffbs-bg); color: var(--ffbs-fg);
+            border-radius: 12px; border: 1px solid var(--ffbs-border);
+            box-shadow: 0 10px 34px var(--ffbs-shadow); animation: ffbs-pop .18s ease-out;
+            box-sizing: border-box;
         }
+        #ffbs-setup .ffbs-card { width: 320px; max-width: 90vw; padding: 22px; }
         #ffbs-setup h2 { margin: 0 0 6px; font-size: 17px; }
-        #ffbs-setup p  { margin: 0 0 14px; font-size: 12px; color: #aaa; }
-        #ffbs-setup a  { color: #4aa3ff; text-decoration: underline; }
+        #ffbs-setup p  { margin: 0 0 14px; font-size: 12px; color: var(--ffbs-muted); }
+        #ffbs-setup a, #ffbs-config a { color: var(--ffbs-link); text-decoration: underline; }
         #ffbs-setup input {
             width: 100%; box-sizing: border-box; padding: 9px; font-size: 13px;
-            background: #15171b; color: #eee; border: 1px solid #3a3f47; border-radius: 6px;
-            margin-bottom: 10px;
+            background: var(--ffbs-bg2); color: var(--ffbs-fg); border: 1px solid var(--ffbs-border);
+            border-radius: 6px; margin-bottom: 10px;
         }
         #ffbs-setup button {
             width: 100%; padding: 9px; font-size: 13px; font-weight: 700;
-            background: #2ecc40; color: #0a0a0a; border: none; border-radius: 6px; cursor: pointer;
+            background: var(--ffbs-accent); color: var(--ffbs-accent-fg); border: none; border-radius: 6px; cursor: pointer;
         }
         #ffbs-setup button:disabled { opacity: 0.6; cursor: default; }
         #ffbs-setup .ffbs-msg  { margin-top: 10px; font-size: 12px; min-height: 16px; }
         #ffbs-setup .ffbs-err  { color: #ff6b61; }
-        #ffbs-setup .ffbs-info { color: #ffdc00; }
-        #ffbs-setup .ffbs-close {
-            position: absolute; top: 8px; right: 10px; width: 26px; height: 26px; padding: 0;
-            background: transparent; color: #aaa; font-size: 20px; line-height: 26px;
-            text-align: center; cursor: pointer; border: none;
+        #ffbs-setup .ffbs-info { color: #d4a800; }
+        #ffbs-setup .ffbs-close, #ffbs-config .ffbs-close {
+            position: absolute; top: 8px; right: 10px; width: 28px; height: 28px; padding: 0;
+            background: transparent; color: var(--ffbs-muted); font-size: 20px; line-height: 28px;
+            text-align: center; cursor: pointer; border: none; border-radius: 6px;
         }
-        #ffbs-setup .ffbs-close:hover { color: #fff; }
+        #ffbs-setup .ffbs-close:hover, #ffbs-config .ffbs-close:hover { background: var(--ffbs-hover); color: var(--ffbs-fg); }
         #ffbs-reopen {
             position: fixed; right: 12px; bottom: 70px; z-index: 2147483646;
             padding: 7px 11px; font-size: 12px; font-weight: 700;
-            background: #2ecc40; color: #0a0a0a; border: none; border-radius: 18px; cursor: pointer;
-            box-shadow: 0 3px 12px rgba(0,0,0,0.5); font-family: Arial, Helvetica, sans-serif;
+            background: var(--ffbs-accent); color: var(--ffbs-accent-fg); border: none; border-radius: 18px; cursor: pointer;
+            box-shadow: 0 3px 12px var(--ffbs-shadow); font-family: Arial, Helvetica, sans-serif;
         }
 
-        /* ---- Settings gear button ---- */
+        /* ---- settings gear ---- */
         #ffbs-gear {
             position: fixed; right: 12px; bottom: 110px; z-index: 2147483646;
             width: 38px; height: 38px; padding: 0; font-size: 18px; line-height: 38px;
-            text-align: center; background: #1f2227; color: #2ecc40;
-            border: 1px solid #3a3f47; border-radius: 50%; cursor: pointer;
-            box-shadow: 0 3px 12px rgba(0,0,0,0.5); font-family: Arial, Helvetica, sans-serif;
+            text-align: center; background: var(--ffbs-bg); color: var(--ffbs-accent);
+            border: 1px solid var(--ffbs-border); border-radius: 50%; cursor: pointer;
+            box-shadow: 0 3px 12px var(--ffbs-shadow); font-family: Arial, Helvetica, sans-serif;
         }
-        #ffbs-gear:hover { color: #fff; border-color: #2ecc40; }
+        #ffbs-gear:hover { border-color: var(--ffbs-accent); }
         /* ⚙ inside Torn's footer button row: keeps Torn's button class, own colour */
         [data-ffbs-gear] { background: linear-gradient(to bottom, #2ecc40, #1a7a26) !important; }
         [data-ffbs-gear]:hover { background: linear-gradient(to bottom, #3ee052, #2ecc40) !important; }
 
-        /* ---- Settings panel (reuses setup overlay look) ---- */
-        #ffbs-config { position: fixed; inset: 0; z-index: 2147483647; background: rgba(0,0,0,0.85);
-            display: flex; align-items: center; justify-content: center; font-family: Arial, Helvetica, sans-serif; }
+        /* ---- settings panel ---- */
         #ffbs-config .ffbs-card {
-            position: relative; background: #1f2227; color: #eee; width: 340px; max-width: 92vw;
-            max-height: 88vh; overflow-y: auto;
-            padding: 20px; border-radius: 10px; border: 1px solid #3a3f47; box-shadow: 0 8px 30px rgba(0,0,0,0.6);
+            width: 360px; max-width: 94vw; max-height: 88vh; display: flex; flex-direction: column; padding: 0;
         }
-        #ffbs-config h2 { margin: 0 0 4px; font-size: 17px; }
-        #ffbs-config .ffbs-sub { margin: 0 0 14px; font-size: 12px; color: #aaa; }
-        #ffbs-config .ffbs-section { font-size: 11px; text-transform: uppercase; letter-spacing: .5px;
-            color: #2ecc40; font-weight: 700; margin: 14px 0 6px; border-bottom: 1px solid #3a3f47; padding-bottom: 4px; }
+        #ffbs-config .ffbs-head { padding: 16px 44px 10px 18px; border-bottom: 1px solid var(--ffbs-border); }
+        #ffbs-config h2 { margin: 0; font-size: 16px; display: flex; align-items: center; gap: 8px; }
+        #ffbs-config h2 .ffbs-ver { font-size: 10px; font-weight: 700; color: var(--ffbs-muted);
+            border: 1px solid var(--ffbs-border); border-radius: 10px; padding: 2px 6px; }
+        #ffbs-config .ffbs-body { overflow-y: auto; padding: 6px 14px 4px; }
+        #ffbs-config details { border-bottom: 1px solid var(--ffbs-border); }
+        #ffbs-config details:last-child { border-bottom: 0; }
+        #ffbs-config summary {
+            list-style: none; cursor: pointer; padding: 11px 4px; font-size: 11px; font-weight: 700;
+            text-transform: uppercase; letter-spacing: .6px; color: var(--ffbs-accent);
+            display: flex; justify-content: space-between; align-items: center; user-select: none;
+        }
+        #ffbs-config summary::-webkit-details-marker { display: none; }
+        #ffbs-config summary::after { content: '▸'; color: var(--ffbs-muted); transition: transform .15s; }
+        #ffbs-config details[open] > summary::after { transform: rotate(90deg); }
+        #ffbs-config details > .ffbs-sec { padding: 0 4px 10px; }
         #ffbs-config .ffbs-row { display: flex; align-items: center; justify-content: space-between;
-            gap: 10px; padding: 6px 0; font-size: 13px; }
+            gap: 10px; padding: 7px 0; font-size: 13px; }
         #ffbs-config .ffbs-row label { flex: 1; cursor: pointer; }
-        #ffbs-config .ffbs-row .hint { display: block; font-size: 10px; color: #888; margin-top: 2px; }
-        #ffbs-config input[type="number"] {
-            width: 70px; box-sizing: border-box; padding: 6px; font-size: 13px; text-align: right;
-            background: #15171b; color: #eee; border: 1px solid #3a3f47; border-radius: 6px;
+        #ffbs-config .ffbs-row .hint { display: block; font-size: 10px; color: var(--ffbs-muted); margin-top: 2px; }
+        #ffbs-config .ffbs-note { font-size: 11px; color: var(--ffbs-muted); margin: 2px 0 4px; }
+        #ffbs-config input[type="number"], #ffbs-config select {
+            box-sizing: border-box; padding: 6px; font-size: 13px;
+            background: var(--ffbs-bg2); color: var(--ffbs-fg); border: 1px solid var(--ffbs-border); border-radius: 6px;
         }
-        #ffbs-config input[type="checkbox"] { width: 18px; height: 18px; accent-color: #2ecc40; cursor: pointer; }
-        #ffbs-config .ffbs-actions { display: flex; gap: 8px; margin-top: 18px; }
-        #ffbs-config .ffbs-actions button { flex: 1; padding: 9px; font-size: 13px; font-weight: 700;
-            border: none; border-radius: 6px; cursor: pointer; }
-        #ffbs-config .btn-save  { background: #2ecc40; color: #0a0a0a; }
-        #ffbs-config .btn-reset { background: #3a3f47; color: #eee; }
-        #ffbs-config .btn-key   { background: #15171b; color: #4aa3ff; border: 1px solid #3a3f47 !important; }
-        #ffbs-config .ffbs-close {
-            position: absolute; top: 8px; right: 10px; width: 26px; height: 26px; padding: 0;
-            background: transparent; color: #aaa; font-size: 20px; line-height: 26px;
-            text-align: center; cursor: pointer; border: none;
+        #ffbs-config input[type="number"] { width: 72px; text-align: right; }
+        #ffbs-config select { min-width: 104px; }
+        #ffbs-config input[type="checkbox"] { width: 18px; height: 18px; accent-color: var(--ffbs-accent); cursor: pointer; }
+
+        #ffbs-config .ffbs-preview {
+            display: flex; flex-wrap: wrap; gap: 16px 18px; align-items: center; justify-content: center;
+            padding: 14px 8px 12px; margin: 4px 0 6px; border-radius: 8px;
+            background: var(--ffbs-bg2); border: 1px dashed var(--ffbs-border);
         }
-        #ffbs-config .ffbs-close:hover { color: #fff; }
-        #ffbs-config .ffbs-saved { text-align: center; font-size: 12px; color: #ffdc00; min-height: 16px; margin-top: 8px; }
+        #ffbs-config .ffbs-pv { position: relative; display: inline-block; padding: 6px 10px 6px 6px;
+            font-size: 12px; color: var(--ffbs-muted); }
+        #ffbs-config .ffbs-pv .ffbs-badge { position: absolute; }
+
+        #ffbs-config .ffbs-cacheinfo { font-size: 12px; color: var(--ffbs-muted); margin: 2px 0 8px; line-height: 1.5; }
+        #ffbs-config .ffbs-btn {
+            width: 100%; padding: 8px; font-size: 12px; font-weight: 700; cursor: pointer; border-radius: 6px;
+            background: var(--ffbs-bg2); color: var(--ffbs-fg); border: 1px solid var(--ffbs-border);
+        }
+        #ffbs-config .ffbs-btn:hover { background: var(--ffbs-hover); }
+        #ffbs-config .ffbs-btn.danger { color: #e5534b; }
+        #ffbs-config .ffbs-btn.armed { background: #e5534b; color: #fff; border-color: #e5534b; }
+
+        #ffbs-config .ffbs-foot { padding: 12px 14px 14px; border-top: 1px solid var(--ffbs-border); }
+        #ffbs-config .ffbs-actions { display: flex; gap: 8px; }
+        #ffbs-config .ffbs-actions button { flex: 1; padding: 10px; font-size: 13px; font-weight: 700;
+            border: none; border-radius: 7px; cursor: pointer; }
+        #ffbs-config .btn-save  { background: var(--ffbs-accent); color: var(--ffbs-accent-fg); }
+        #ffbs-config .btn-reset { background: var(--ffbs-hover); color: var(--ffbs-fg); }
+        #ffbs-config .ffbs-links { display: flex; justify-content: space-between; margin-top: 10px; font-size: 11px; }
+        #ffbs-config .ffbs-links button { background: none; border: 0; padding: 0; cursor: pointer;
+            color: var(--ffbs-link); font-size: 11px; text-decoration: underline; }
+        #ffbs-config .ffbs-err { color: #e5534b; font-size: 12px; text-align: center; min-height: 0; margin-top: 8px; }
+
+        /* ---- toast ---- */
+        #ffbs-toast {
+            position: fixed; left: 50%; bottom: 90px; z-index: 2147483647; transform: translate(-50%, 10px);
+            padding: 9px 16px; border-radius: 20px; font: 700 13px Arial, Helvetica, sans-serif;
+            background: var(--ffbs-bg); color: var(--ffbs-fg); border: 1px solid var(--ffbs-accent);
+            box-shadow: 0 6px 20px var(--ffbs-shadow); opacity: 0; pointer-events: none;
+            transition: opacity .2s, transform .2s; white-space: nowrap;
+        }
+        #ffbs-toast.show { opacity: 1; transform: translate(-50%, 0); }
+        #ffbs-toast.err { border-color: #e5534b; }
         `;
         (document.head || document.documentElement).appendChild(style);
     }
@@ -838,6 +981,16 @@
      * moved or re-parented, so React's DOM bookkeeping stays intact; if React
      * replaces the link, the MutationObserver sees the new one and re-badges it.
      * ===================================================================== */
+    // Faint "…" in the FF slot while a player's first lookup is in flight.
+    // applyBadges() replaces it (or removes it when there's no data).
+    function showLoading(link) {
+        if (link.hasAttribute('data-ffbs-loading') && link.querySelector('.ffbs-loading')) return;
+        const b = document.createElement('span');
+        b.className = 'ffbs-badge ffbs-ff ffbs-grey ffbs-loading';
+        b.textContent = '…';
+        link.setAttribute('data-ffbs-loading', '');
+        link.appendChild(b);
+    }
     function isHiddenOwn(pid) {
         return !!S.HIDE_OWN_FACTION && ownFactionMembers.has(pid);
     }
@@ -845,6 +998,7 @@
         if (isHiddenOwn(pid)) {
             // Teammate: no FF/BS, but keep the hospital/travel pill.
             link.querySelectorAll('.ffbs-badge:not(.ffbs-timer)').forEach((b) => b.remove());
+            link.removeAttribute('data-ffbs-loading');
             link.setAttribute(BADGE_ATTR, pid);
             applyTimerBadge(link, pid);
             return;
@@ -854,6 +1008,7 @@
         const ffKnown = data.ff != null && !isNaN(data.ff);
         const bsKnown = data.bsRaw != null && !isNaN(data.bsRaw);
         link.querySelectorAll('.ffbs-badge:not(.ffbs-timer)').forEach((b) => b.remove());
+        link.removeAttribute('data-ffbs-loading');
         link.setAttribute(BADGE_ATTR, pid);
         if (S.HIDE_WHEN_NO_DATA && !ffKnown && !bsKnown) {
             applyTimerBadge(link, pid);
@@ -1066,7 +1221,9 @@
         if (prev && prev.classList.contains('ffbs-toolbar')) return prev;
         const bar = document.createElement('div');
         bar.className = 'ffbs-toolbar';
-        bar.innerHTML = SORT_MODES.map((m) => `<button type="button" data-sort="${m.key}">${m.label}</button>`).join('') +
+        bar.innerHTML = '<span class="ffbs-seg">' +
+            SORT_MODES.map((m) => `<button type="button" data-sort="${m.key}">${m.label}</button>`).join('') +
+            '</span><span class="ffbs-count"></span>' +
             '<label><input type="checkbox" data-okay /> Okay only</label>';
         bar.addEventListener('click', (e) => {
             const btn = e.target.closest('button[data-sort]');
@@ -1102,11 +1259,18 @@
                 return { row: row, i: i, st: factionStatus.get(pid), stats: statsCache.get(pid) };
             });
 
+            let okay = 0;
             items.forEach((it) => {
+                if (it.st && it.st.state === 'Okay') okay++;
                 const hide = S.LIST_ONLY_OKAY && it.st && it.st.state && it.st.state !== 'Okay';
                 if (hide) { if (!it.row.hasAttribute('data-ffbs-hidden')) it.row.setAttribute('data-ffbs-hidden', '1'); }
                 else if (it.row.hasAttribute('data-ffbs-hidden')) it.row.removeAttribute('data-ffbs-hidden');
             });
+            const count = bar && bar.querySelector('.ffbs-count');
+            if (count) {
+                const t = `Okay ${okay}/${items.length}`;
+                if (count.textContent !== t) count.textContent = t;
+            }
 
             if (S.LIST_SORT === 'default') {
                 container.removeAttribute('data-ffbs-sorted');
@@ -1161,6 +1325,7 @@
             const cached = statsCache.get(pid);
             const fresh  = cached && (Date.now() - (cached.ts || 0) < ttl);
             if (cached && link.getAttribute(BADGE_ATTR) !== pid) applyBadges(link, pid);
+            if (!cached) showLoading(link);
             if (!fresh) pending.add(pid);
         });
         if (pending.size > 0) scheduleFetch();
@@ -1197,7 +1362,7 @@
             });
         }
         enhanceStatusCells();
-        if (S.LIST_SORT === 'hosp' || S.LIST_ONLY_OKAY) applyListSort();
+        if (S.SORT_TOOLBAR) applyListSort(); // keeps the Okay counter / hosp order live
     }
 
     /* =======================================================================
@@ -1281,7 +1446,7 @@
             API_KEY = key;
             setMsg('Key verified. Starting…', 'ffbs-info');
             log('API key verified and saved.');
-            setTimeout(() => { overlay.remove(); startMain(); }, 500);
+            setTimeout(() => { overlay.remove(); toast('API key saved ✓'); startMain(); }, 500);
         }
         btn.addEventListener('click', doSave);
         input.addEventListener('keydown', (e) => { if (e.key === 'Enter') doSave(); });
@@ -1356,6 +1521,25 @@
         f.addEventListener('click', showConfigPanel);
         (document.body || document.documentElement).appendChild(f);
     }
+    function cacheSummary() {
+        let kb = 0;
+        try { kb = Math.round(((localStorage.getItem(LS_STATS) || '').length * 2) / 1024); } catch (e) {}
+        const own = myBattleStat ? compact(myBattleStat) : 'unknown';
+        return `${statsCache.size} player(s) cached · ~${kb} KB<br>Your battle stats: ${own}`;
+    }
+    function clearStatsCache() {
+        statsCache.clear();
+        pending.clear();
+        try { localStorage.removeItem(LS_STATS); localStorage.removeItem(LS_OWN_BS); } catch (e) {}
+        document.querySelectorAll(`a[${BADGE_ATTR}]`).forEach((link) => {
+            link.querySelectorAll('.ffbs-badge:not(.ffbs-timer)').forEach((b) => b.remove());
+            link.removeAttribute(BADGE_ATTR);
+        });
+        myBattleStat = null;
+        loadOwnBattleStats();
+        scanPage(); // refetch what's on screen
+    }
+
     function showConfigPanel() {
         if (document.getElementById('ffbs-config')) return;
         const overlay = document.createElement('div');
@@ -1371,54 +1555,115 @@
                 <label for="cfg-${key}">${label}<span class="hint">${hint}</span></label>
                 <input type="number" id="cfg-${key}" value="${S[key]}" step="${step}" min="0" />
             </div>`;
+        const selRow = (key, label, hint, options) => `
+            <div class="ffbs-row">
+                <label for="cfg-${key}">${label}<span class="hint">${hint}</span></label>
+                <select id="cfg-${key}">${Object.keys(options).map((v) =>
+                    `<option value="${v}" ${S[key] === v ? 'selected' : ''}>${options[v]}</option>`).join('')}</select>
+            </div>`;
+        const opts = (obj) => Object.keys(obj).reduce((o, k) => { o[k] = obj[k].label || obj[k]; return o; }, {});
+        const section = (title, body, open) => `
+            <details ${open ? 'open' : ''}><summary>${title}</summary><div class="ffbs-sec">${body}</div></details>`;
 
         overlay.innerHTML = `
-            <div class="ffbs-card">
+            <div class="ffbs-card" role="dialog" aria-label="FF/BS Badges settings">
                 <button class="ffbs-close" id="cfg-close" title="Close">&times;</button>
-                <h2>FF/BS Badges — Settings</h2>
-                <p class="ffbs-sub">Changes apply immediately. Stored locally on this device.</p>
-
-                <div class="ffbs-section">Display</div>
-                ${toggleRow('SHOW_NAME_TIMER_BADGE', 'Hospital / travel pill', 'Countdown badge on the avatar corner')}
-                ${toggleRow('ENHANCE_STATUS_CELL', 'Rewrite faction Status column', 'Live timers in the member list')}
-                ${toggleRow('SKIP_CHAT', 'Skip chat box', "Don't badge names inside chat")}
-                ${toggleRow('HIDE_WHEN_NO_DATA', 'Hide empty badges', 'Draw nothing when FF & BS unknown')}
-                ${toggleRow('SORT_TOOLBAR', 'Faction list sort bar', 'Sort by FF / BS / hospital, filter Okay')}
-                ${toggleRow('HIDE_OWN_FACTION', 'Hide badges on my faction', 'No FF/BS on teammates (timers stay)')}
-                ${numRow('HOSP_ALERT_SEC', 'Hospital alert (sec)', 'Pulse when this little time is left (0 = off)', '10')}
-
-                <div class="ffbs-section">Cache</div>
-                ${numRow('CACHE_HOURS', 'Keep FF/BS data (hours)', 'Reused without refetching (72 = 3 days)', '1')}
-
-                <div class="ffbs-section">FairFight colour thresholds</div>
-                ${numRow('FF_GREEN', 'Green below', 'FF under this = green', '0.05')}
-                ${numRow('FF_YELLOW', 'Yellow below', 'FF under this = yellow', '0.05')}
-                ${numRow('FF_ORANGE', 'Orange below', 'FF under this = orange, above = red', '0.05')}
-
-                <div class="ffbs-section">Battle-stat colour thresholds</div>
-                <p class="ffbs-sub" style="margin:0 0 4px;">Multiples of your own total BS.</p>
-                ${numRow('BS_YELLOW', 'Yellow up to', 'e.g. 1.10 = +10% over you', '0.05')}
-                ${numRow('BS_ORANGE', 'Orange up to', 'e.g. 1.25 = +25% over you', '0.05')}
-
-                <div class="ffbs-section">Advanced</div>
-                ${toggleRow('DEBUG', 'Debug logging', 'Verbose messages in the browser console')}
-
-                <div class="ffbs-actions">
-                    <button class="btn-save"  id="cfg-save">Save</button>
-                    <button class="btn-reset" id="cfg-reset">Reset</button>
+                <div class="ffbs-head"><h2>FF/BS Badges <span class="ffbs-ver">v${VERSION}</span></h2></div>
+                <div class="ffbs-body">
+                ${section('Appearance', `
+                    <div class="ffbs-preview" id="cfg-preview"></div>
+                    ${selRow('BADGE_STYLE', 'Badge style', 'How FF / BS badges are drawn', opts(BADGE_STYLES))}
+                    ${selRow('BADGE_SIZE', 'Badge size', 'Bigger is easier to read on a phone', opts(BADGE_SIZES))}
+                    ${selRow('THEME', 'Panel theme', 'Settings, toolbar and setup card', THEMES)}
+                `, true)}
+                ${section('Features', `
+                    ${toggleRow('SHOW_NAME_TIMER_BADGE', 'Hospital / travel pill', 'Countdown badge on the avatar corner')}
+                    ${toggleRow('ENHANCE_STATUS_CELL', 'Live status column', 'Timers in faction & war member lists')}
+                    ${toggleRow('SORT_TOOLBAR', 'Member list sort bar', 'Sort by FF / BS / hospital, filter Okay')}
+                    ${toggleRow('HIDE_OWN_FACTION', 'Hide badges on my faction', 'No FF/BS on teammates (timers stay)')}
+                    ${toggleRow('SKIP_CHAT', 'Skip chat box', "Don't badge names inside chat")}
+                    ${toggleRow('HIDE_WHEN_NO_DATA', 'Hide empty badges', 'Draw nothing when FF & BS unknown')}
+                    ${numRow('HOSP_ALERT_SEC', 'Hospital alert (sec)', 'Pulse when this little time is left (0 = off)', '10')}
+                `)}
+                ${section('Colour thresholds', `
+                    <p class="ffbs-note">FairFight</p>
+                    ${numRow('FF_GREEN', 'Green below', 'FF under this = green', '0.05')}
+                    ${numRow('FF_YELLOW', 'Yellow below', 'FF under this = yellow', '0.05')}
+                    ${numRow('FF_ORANGE', 'Orange below', 'FF under this = orange, above = red', '0.05')}
+                    <p class="ffbs-note">Battle stats — multiples of your own total</p>
+                    ${numRow('BS_YELLOW', 'Yellow up to', 'e.g. 1.10 = +10% over you', '0.05')}
+                    ${numRow('BS_ORANGE', 'Orange up to', 'e.g. 1.25 = +25% over you', '0.05')}
+                `)}
+                ${section('Cache & data', `
+                    ${numRow('CACHE_HOURS', 'Keep FF/BS data (hours)', 'Reused without refetching (72 = 3 days)', '1')}
+                    <div class="ffbs-cacheinfo" id="cfg-cacheinfo">${cacheSummary()}</div>
+                    <button type="button" class="ffbs-btn danger" id="cfg-clear">Clear cache</button>
+                `)}
+                ${section('Advanced', `
+                    ${toggleRow('DEBUG', 'Debug logging', 'Verbose messages in the browser console')}
+                `)}
                 </div>
-                <div class="ffbs-actions" style="margin-top:8px;">
-                    <button class="btn-key" id="cfg-key">Change API key</button>
+                <div class="ffbs-foot">
+                    <div class="ffbs-actions">
+                        <button class="btn-save"  id="cfg-save">Save</button>
+                        <button class="btn-reset" id="cfg-reset">Reset</button>
+                    </div>
+                    <div class="ffbs-err" id="cfg-err"></div>
+                    <div class="ffbs-links">
+                        <button type="button" id="cfg-key">Change API key</button>
+                        <a href="${REPO_URL}" target="_blank" rel="noopener">GitHub</a>
+                    </div>
                 </div>
-                <div class="ffbs-saved" id="cfg-saved"></div>
             </div>`;
         (document.body || document.documentElement).appendChild(overlay);
 
+        const $ = (id) => overlay.querySelector('#' + id);
         const close = () => overlay.remove();
-        overlay.querySelector('#cfg-close').addEventListener('click', close);
+        $('cfg-close').addEventListener('click', close);
         overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
+        const errMsg = $('cfg-err');
 
-        const savedMsg = overlay.querySelector('#cfg-saved');
+        // ---- live preview: sample badges using the *unsaved* form values ----
+        const num = (id, dflt) => { const v = parseFloat(($(id) || {}).value); return isNaN(v) ? dflt : v; };
+        const renderPreview = () => {
+            const g = num('cfg-FF_GREEN', S.FF_GREEN), y = num('cfg-FF_YELLOW', S.FF_YELLOW), o = num('cfg-FF_ORANGE', S.FF_ORANGE);
+            const ffT = (ff) => ff < g ? 'ffbs-green' : ff < y ? 'ffbs-yellow' : ff < o ? 'ffbs-orange' : 'ffbs-red';
+            const samples = [
+                { ff: 1.2, bs: 'ffbs-green',  bsTxt: '850k' },
+                { ff: 2.1, bs: 'ffbs-yellow', bsTxt: '1.1m' },
+                { ff: 2.7, bs: 'ffbs-orange', bsTxt: '1.3m' },
+                { ff: 3.4, bs: 'ffbs-red',    bsTxt: '4.2m' },
+            ];
+            const pv = $('cfg-preview');
+            pv.setAttribute('data-ffbs-pstyle', $('cfg-BADGE_STYLE').value);
+            pv.setAttribute('data-ffbs-psize', $('cfg-BADGE_SIZE').value);
+            pv.innerHTML = samples.map((s) => `<span class="ffbs-pv">Player
+                <span class="ffbs-badge ffbs-ff ${ffT(s.ff)}">${formatFF(s.ff)}</span>
+                <span class="ffbs-badge ffbs-bs ${s.bs}">${s.bsTxt}</span></span>`).join('');
+        };
+        renderPreview();
+        overlay.querySelectorAll('select, input[type="number"]').forEach((el) => {
+            el.addEventListener('input', renderPreview);
+            el.addEventListener('change', renderPreview);
+        });
+
+        // ---- clear cache: tap twice to confirm (no confirm() dialogs on PDA) ----
+        const clearBtn = $('cfg-clear');
+        let armTimer = null;
+        clearBtn.addEventListener('click', () => {
+            if (!clearBtn.classList.contains('armed')) {
+                clearBtn.classList.add('armed');
+                clearBtn.textContent = 'Tap again to clear';
+                armTimer = setTimeout(() => { clearBtn.classList.remove('armed'); clearBtn.textContent = 'Clear cache'; }, 3000);
+                return;
+            }
+            clearTimeout(armTimer);
+            clearStatsCache();
+            clearBtn.classList.remove('armed');
+            clearBtn.textContent = 'Clear cache';
+            $('cfg-cacheinfo').innerHTML = cacheSummary();
+            toast('Cache cleared');
+        });
 
         // Read every field from the DOM into a copy of S. Returns the new
         // settings, or an error string if the thresholds are out of order.
@@ -1426,11 +1671,13 @@
             const next = Object.assign({}, S);
             const boolKeys = ['SHOW_NAME_TIMER_BADGE', 'ENHANCE_STATUS_CELL', 'SKIP_CHAT', 'HIDE_WHEN_NO_DATA', 'SORT_TOOLBAR', 'HIDE_OWN_FACTION', 'DEBUG'];
             const numKeys  = ['FF_GREEN', 'FF_YELLOW', 'FF_ORANGE', 'BS_YELLOW', 'BS_ORANGE', 'CACHE_HOURS', 'HOSP_ALERT_SEC'];
-            boolKeys.forEach((k) => { const el = overlay.querySelector(`#cfg-${k}`); if (el) next[k] = el.checked; });
+            const selKeys  = ['BADGE_STYLE', 'BADGE_SIZE', 'THEME'];
+            boolKeys.forEach((k) => { const el = $(`cfg-${k}`); if (el) next[k] = el.checked; });
             numKeys.forEach((k) => {
-                const el = overlay.querySelector(`#cfg-${k}`);
+                const el = $(`cfg-${k}`);
                 if (el) { const v = parseFloat(el.value); if (!isNaN(v) && v >= 0) next[k] = v; }
             });
+            selKeys.forEach((k) => { const el = $(`cfg-${k}`); if (el) next[k] = el.value; });
             if (!(next.FF_GREEN < next.FF_YELLOW && next.FF_YELLOW < next.FF_ORANGE))
                 return 'FF thresholds must increase: green < yellow < orange.';
             if (!(next.BS_YELLOW <= next.BS_ORANGE))
@@ -1440,6 +1687,7 @@
         };
 
         const applyLive = () => {
+            applyDisplayPrefs();
             // Re-tint existing badges and rebuild timers/status without a page reload.
             document.querySelectorAll(`a[${BADGE_ATTR}]`).forEach((link) => {
                 const pid = link.getAttribute(BADGE_ATTR);
@@ -1458,27 +1706,30 @@
             scanPage(); // e.g. teammates un-hidden -> queue their lookups now
         };
 
-        overlay.querySelector('#cfg-save').addEventListener('click', () => {
+        $('cfg-save').addEventListener('click', () => {
             const next = collect();
             if (typeof next === 'string') {
-                savedMsg.textContent = next;
+                errMsg.textContent = next;
+                toast(next, true);
                 return;
             }
+            errMsg.textContent = '';
             S = next;
             saveSettings();
             applyLive();
-            savedMsg.textContent = 'Saved ✓';
-            setTimeout(() => { savedMsg.textContent = ''; }, 1500);
+            toast('Settings saved ✓');
+            close();
         });
 
-        overlay.querySelector('#cfg-reset').addEventListener('click', () => {
+        $('cfg-reset').addEventListener('click', () => {
             resetSettings();
             close();
-            showConfigPanel(); // re-render with defaults
             applyLive();
+            showConfigPanel(); // re-render with defaults
+            toast('Settings reset to defaults');
         });
 
-        overlay.querySelector('#cfg-key').addEventListener('click', () => {
+        $('cfg-key').addEventListener('click', () => {
             close();
             showSetupCard();
         });
@@ -1511,6 +1762,7 @@
 
     function init() {
         loadSettings();
+        applyDisplayPrefs();
         injectStyles();
         loadStatsCache();
         const stored = keyGet();
