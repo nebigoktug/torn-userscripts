@@ -1,11 +1,11 @@
 // ==UserScript==
 // @name         Torn FF/BS Badges
 // @namespace    https://github.com/tornffbs
-// @version      2.2.0
+// @version      2.2.1
 // @description  Shows FairFight + estimated Battle Stat badges next to player names on Torn. On faction pages it also adds a live hospital countdown and travel info (destination + landing time), and can rewrite the member-list Status column with live timers. Includes an in-page settings panel (⚙). Works on Torn PDA and desktop Tampermonkey.
 // @author       Nebigoktug
 // @match        https://www.torn.com/*
-// @match        https://*.torn.com/*
+// @match        https://torn.com/*
 // @grant        GM_xmlhttpRequest
 // @grant        GM.xmlHttpRequest
 // @connect      ffscouter.com
@@ -18,6 +18,11 @@
 (function () {
     'use strict';
 
+    // Hard host guard. Torn PDA may inject userscripts on any site whose URL
+    // merely contains "torn", ignoring @match — bail out unless this is the
+    // real game site (also skips api.torn.com and other subdomains).
+    if (!/^(www\.)?torn\.com$/i.test(location.hostname)) return;
+
     /* =======================================================================
      * CONFIG DEFAULTS  — user-overridable ones live in SETTINGS (⚙ panel)
      * ===================================================================== */
@@ -26,6 +31,7 @@
     const SCAN_INTERVAL  = 1500;              // page re-scan (PDA SPA), ms
     const BATCH_SIZE     = 200;               // FFScouter targets per request (max 205)
     const RATELIMIT_MS   = 8000;              // backoff after a 429
+    const TEMP_BACKOFF_MS = 10000;            // backoff after a network/5xx/bad-JSON error
     const BADGE_ATTR     = 'data-ffbs';       // marks a decorated wrapper
 
     const FACTION_FETCH_INTERVAL   = 60000;   // refresh faction status, ms
@@ -107,6 +113,9 @@
     const userStatus       = new Map(); // pid -> { state, until, description, ts }
     const pendingUserFetch = new Set();  // pids with an in-flight user fetch
     const USER_STATUS_TTL_MS = 120000;   // re-fetch a user's status after 2 min
+    const userFetchQueue   = [];         // pids waiting for a user-status fetch
+    const USER_FETCH_GAP_MS = 1500;      // min gap between user fetches (<= 40/min)
+    let userQueueTimer     = null;
 
     let scanTimer = null, factionTimer = null, tickTimer = null, ownStatsTimer = null;
 
@@ -432,6 +441,9 @@
      * ===================================================================== */
     function getViewedFactionId() {
         try {
+            // Only faction pages carry a faction ID; other pages (companies,
+            // items…) also use "ID=" and must not trigger faction/{id} calls.
+            if (!/factions\.php/i.test(location.pathname)) return null;
             const hay = location.search + ' ' + location.hash + ' ' + location.href;
             const m = hay.match(/[?&#/]ID=(\d+)/i);
             if (m) return m[1];
@@ -482,9 +494,35 @@
     /* =======================================================================
      * SINGLE-USER STATUS
      * ===================================================================== */
-    async function fetchUserStatus(pid) {
-        if (!API_KEY || pendingUserFetch.has(pid) || Date.now() < tornPausedUntil) return;
+    // Queue user-status fetches and send them one at a time, so a page full of
+    // names can't burst through Torn's 100 req/min limit (shared with PDA).
+    function queueUserStatus(pid) {
+        if (pendingUserFetch.has(pid)) return;
         pendingUserFetch.add(pid);
+        userFetchQueue.push(pid);
+        pumpUserQueue();
+    }
+    function pumpUserQueue() {
+        if (userQueueTimer || userFetchQueue.length === 0) return;
+        const wait = Math.max(USER_FETCH_GAP_MS, tornPausedUntil - Date.now());
+        userQueueTimer = setTimeout(async () => {
+            userQueueTimer = null;
+            const pid = userFetchQueue.shift();
+            if (pid != null) {
+                if (API_KEY) await fetchUserStatus(pid);
+                else pendingUserFetch.delete(pid);
+            }
+            pumpUserQueue();
+        }, wait);
+    }
+    function isOnScreen(el) {
+        if (!el || !el.isConnected) return false;
+        const r = el.getBoundingClientRect();
+        if (r.width === 0 && r.height === 0) return false;
+        const vh = window.innerHeight || document.documentElement.clientHeight;
+        return r.bottom >= -200 && r.top <= vh + 200;
+    }
+    async function fetchUserStatus(pid) {
         try {
             const resp = await httpGet(`https://api.torn.com/user/${pid}?selections=profile&key=${encodeURIComponent(API_KEY)}`);
             const cat = classify(resp.status, resp.text);
@@ -523,12 +561,12 @@
             pendingUserFetch.delete(pid);
         }
     }
-    function resolveStatus(pid) {
+    function resolveStatus(pid, wrap) {
         const fs = factionStatus.get(pid);
         if (fs) return fs;
         const us = userStatus.get(pid);
         if (us && (Date.now() - us.ts < USER_STATUS_TTL_MS)) return us;
-        if (!pendingUserFetch.has(pid) && Date.now() >= tornPausedUntil) fetchUserStatus(pid);
+        if (isOnScreen(wrap)) queueUserStatus(pid);
         return us || null;
     }
 
@@ -550,19 +588,21 @@
                 const url = `https://ffscouter.com/api/v1/get-stats?key=${encodeURIComponent(API_KEY)}&targets=${batch.join(',')}`;
                 let resp;
                 try { resp = await httpGet(url); }
-                catch (e) { console.log('[FFBS] Stats fetch network error; retry next scan.'); break; }
+                catch (e) { pausedUntil = Date.now() + TEMP_BACKOFF_MS; console.log('[FFBS] Stats fetch network error; backing off.'); break; }
                 const cat = classify(resp.status, resp.text);
                 if (cat === 'auth')      { console.log('[FFBS] Invalid key. Reopening setup.'); clearKeyAndReopenSetup(); break; }
                 if (cat === 'ratelimit') { pausedUntil = Date.now() + RATELIMIT_MS; console.log('[FFBS] Rate limited; backing off.'); break; }
-                if (cat === 'temp')      { console.log('[FFBS] FFScouter temp error; retry next scan.'); break; }
+                if (cat === 'temp')      { pausedUntil = Date.now() + TEMP_BACKOFF_MS; console.log('[FFBS] FFScouter temp error; backing off.'); break; }
                 let data;
                 try { data = JSON.parse(resp.text); }
-                catch (e) { console.log('[FFBS] Bad FFScouter JSON; retry next scan.'); break; }
+                catch (e) { pausedUntil = Date.now() + TEMP_BACKOFF_MS; console.log('[FFBS] Bad FFScouter JSON; backing off.'); break; }
                 if (data && data.error) {
                     if (String(data.error).toLowerCase().includes('key')) { clearKeyAndReopenSetup(); }
+                    else { pausedUntil = Date.now() + TEMP_BACKOFF_MS; }
                     break;
                 }
                 const arr = Array.isArray(data) ? data : (data.results || data.data || []);
+                const now = Date.now();
                 arr.forEach((row) => {
                     if (row == null || row.player_id == null) return;
                     const pid = String(row.player_id);
@@ -570,11 +610,19 @@
                         ff:      row.fair_fight != null ? Number(row.fair_fight) : null,
                         bsHuman: row.bs_estimate_human != null ? row.bs_estimate_human : null,
                         bsRaw:   row.bs_estimate != null ? Number(row.bs_estimate) : null,
-                        ts:      Date.now()
+                        ts:      now
                     });
+                });
+                // IDs FFScouter didn't return: keep any old data (or store an
+                // empty entry) with a fresh ts, so scanPage won't re-queue them
+                // until the cache TTL expires.
+                batch.forEach((pid) => {
+                    const c = statsCache.get(pid);
+                    if (!c || c.ts !== now) {
+                        statsCache.set(pid, Object.assign({ ff: null, bsHuman: null, bsRaw: null }, c, { ts: now }));
+                    }
                     pending.delete(pid);
                 });
-                batch.forEach((pid) => pending.delete(pid));
                 applyAllResolved();
             }
         } finally {
@@ -638,7 +686,7 @@
             if (existing) existing.remove();
             return;
         }
-        const status = resolveStatus(pid);
+        const status = resolveStatus(pid, wrap);
         let badge = wrap.querySelector('.ffbs-timer');
         const remove = () => { if (badge) badge.remove(); };
         const ensure = (cls) => {
@@ -834,6 +882,8 @@
         myBattleStat = null;
         ownStatsGaveUp = false;
         factionStatus.clear();
+        userFetchQueue.length = 0;
+        pendingUserFetch.clear();
         [scanTimer, factionTimer, tickTimer, ownStatsTimer].forEach((t) => t && clearInterval(t));
         scanTimer = factionTimer = tickTimer = ownStatsTimer = null;
         showSetupCard();
