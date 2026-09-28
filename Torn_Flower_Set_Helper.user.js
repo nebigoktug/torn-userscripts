@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Flower Set Helper
 // @namespace    https://github.com/nebigoktug
-// @version      2.3.0
+// @version      2.4.0
 // @description  Counts your flowers, shows how many museum flower sets you can make and what's missing for a target, where each flower is sold abroad, what the missing ones cost on the item market, and the profit of exchanging sets for points. Display only, no automation.
 // @author       Nebigoktug
 // @license      MIT
@@ -24,6 +24,12 @@
  * the item market would cost right now.
  *
  * It only reads data and shows it. It never buys, travels or clicks anything.
+ *
+ * Non-API requests (disclosed per Torn's scripting rules): when YOU tap
+ * "Live counts", the script makes one request for your Items page's Flowers
+ * list (item.php, getCategoryList) — the same request Torn's own Items page
+ * makes. Nothing is ever requested automatically. On the Items page it also
+ * reads the Flowers list Torn loads when you open that tab.
  */
 
 (function () {
@@ -32,7 +38,7 @@
     // Torn PDA may inject on any URL containing "torn"; only run on the game.
     if (!/^(www\.)?torn\.com$/i.test(location.hostname)) return;
 
-    const VERSION  = '2.3.0';
+    const VERSION  = '2.4.0';
     const REPO_URL = 'https://github.com/nebigoktug/torn-userscripts';
     const LS_KEY   = 'tfs_api_key';
     const LS_PREFS = 'tfs_prefs';
@@ -386,7 +392,7 @@
                 <label>Target sets <input type="number" id="tfs-target" min="1" step="1" value="${Number(prefs.target) || 1}"></label>
                 <label><input type="checkbox" id="tfs-prices" ${prefs.showPrices ? 'checked' : ''}> Market prices</label>
                 <button class="tfs-btn" id="tfs-refresh">Refresh</button>
-                <button class="tfs-btn tfs-btn2" id="tfs-live" title="Go to Items and read live counts from the Flowers tab (no API call)">Live counts</button>
+                <button class="tfs-btn tfs-btn2" id="tfs-live" title="Read your live flower counts now (one request, only when you tap)">Live counts</button>
             </div>
             <div id="tfs-out"><div class="tfs-msg">Loading…</div></div>`;
         const target = b.querySelector('#tfs-target');
@@ -555,9 +561,9 @@
                 ${(() => {
                     const inv = currentInventory();
                     return inv.source === 'page'
-                        ? `Counts read from your <a href="https://www.torn.com/item.php">Items</a> page ${ago(inv.timestamp) || 'just now'} (live, no API call).`
+                        ? `Live counts from your Items, read ${ago(inv.timestamp) || 'just now'}.`
                         : `Inventory from the API, updated ${ago(inv.timestamp) || 'recently'} — Torn caches it for up to an hour.
-                           For live counts open <a href="https://www.torn.com/item.php">Items</a> → Flowers once.`;
+                           Tap <b>Live counts</b> for up-to-the-second numbers.`;
                 })()}
                 Items in your display case aren't counted.
                 ${showPrices ? 'Costs walk the cheapest item-market listings; "+" means the listings shown didn\'t cover the full amount.' : ''}
@@ -585,11 +591,12 @@
         return { counts: lastInv ? lastInv.counts : {}, timestamp: apiTs, source: 'api' };
     }
 
-    function captureCategoryList(text) {
+    // Parse an item.php getCategoryList answer into flower counts (null if it isn't one).
+    function parseCategoryList(text) {
         let data;
-        try { data = JSON.parse(text); } catch (e) { return; }
+        try { data = JSON.parse(text); } catch (e) { return null; }
         const list = data && Array.isArray(data.list) ? data.list : null;
-        if (!list) return;
+        if (!list) return null;
         const counts = {};
         FLOWERS.forEach((f) => { counts[f.id] = 0; });
         list.forEach((it) => {
@@ -598,6 +605,11 @@
             const id = FLOWER_IDS.has(Number(it.itemID)) ? Number(it.itemID) : Number(it.ID);
             if (FLOWER_IDS.has(id)) counts[id] += Number(it.Qty) || 0;
         });
+        return counts;
+    }
+    function captureCategoryList(text) {
+        const counts = parseCategoryList(text);
+        if (!counts) return;
         lsSet(LS_PAGEINV, JSON.stringify({ counts, ts: Date.now() }));
         if (liveRequested()) {
             // Came here via "Live counts": show the fresh numbers straight away.
@@ -619,7 +631,49 @@
         const t = Number(lsGet(LS_LIVE));
         return t > 0 && Date.now() - t < LIVE_WINDOW_MS;
     }
-    function goLiveCounts() {
+    // "Live counts" button. Torn's rules allow a non-API request only when it is
+    // directly and manually initiated by the user, so this makes exactly ONE
+    // request per tap (the same one Torn's Items page makes for the Flowers
+    // tab, the way TornTools' quick items do it), never on its own, with a
+    // cooldown against repeated taps. If that fails, fall back to sending the
+    // user to the Items page to tap the Flowers tab themselves.
+    const LIVE_COOLDOWN_MS = 15 * 1000;
+    let lastLiveAt = 0;
+    const rfcToken = () => {
+        const m = document.cookie.match(/(?:^|;\s*)rfc_v=([^;]+)/);
+        return m ? decodeURIComponent(m[1]) : null;
+    };
+    async function fetchLiveCounts() {
+        const rfc = rfcToken();
+        if (!rfc) return null;
+        try {
+            const resp = await fetch(`https://www.torn.com/item.php?rfcv=${encodeURIComponent(rfc)}`, {
+                method: 'POST',
+                credentials: 'same-origin',
+                headers: { 'x-requested-with': 'XMLHttpRequest' },
+                body: new URLSearchParams({ step: 'getCategoryList', itemName: 'Flower', start: '0' }),
+            });
+            return parseCategoryList(await resp.text());
+        } catch (e) { return null; }
+    }
+    async function goLiveCounts() {
+        const btn = overlay && overlay.querySelector('#tfs-live');
+        if (Date.now() - lastLiveAt < LIVE_COOLDOWN_MS) return;
+        lastLiveAt = Date.now();
+        if (btn) { btn.disabled = true; btn.textContent = 'Reading…'; }
+        const counts = await fetchLiveCounts();
+        if (counts) {
+            lsSet(LS_PAGEINV, JSON.stringify({ counts, ts: Date.now() }));
+            if (overlay) refresh(false);
+            // Re-enable after the cooldown.
+            setTimeout(() => {
+                const b = overlay && overlay.querySelector('#tfs-live');
+                if (b) { b.disabled = false; b.textContent = 'Live counts'; }
+            }, Math.max(0, LIVE_COOLDOWN_MS - (Date.now() - lastLiveAt)));
+            if (btn && btn.isConnected) btn.textContent = 'Updated ✓';
+            return;
+        }
+        // Fallback: let the user open the Flowers tab themselves.
         lsSet(LS_LIVE, String(Date.now()));
         if (onItemsPage()) { closePanel(); showHint(); return; }
         location.href = 'https://www.torn.com/item.php';
