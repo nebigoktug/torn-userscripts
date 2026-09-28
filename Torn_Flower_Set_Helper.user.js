@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Flower Set Helper
 // @namespace    https://github.com/nebigoktug
-// @version      2.1.1
+// @version      2.3.0
 // @description  Counts your flowers, shows how many museum flower sets you can make and what's missing for a target, where each flower is sold abroad, what the missing ones cost on the item market, and the profit of exchanging sets for points. Display only, no automation.
 // @author       Nebigoktug
 // @license      MIT
@@ -32,11 +32,12 @@
     // Torn PDA may inject on any URL containing "torn"; only run on the game.
     if (!/^(www\.)?torn\.com$/i.test(location.hostname)) return;
 
-    const VERSION  = '2.1.1';
+    const VERSION  = '2.3.0';
     const REPO_URL = 'https://github.com/nebigoktug/torn-userscripts';
     const LS_KEY   = 'tfs_api_key';
     const LS_PREFS = 'tfs_prefs';
     const LS_PRICES = 'tfs_prices';
+    const LS_PAGEINV = 'tfs_page_inv';      // counts read from your own Items page
     const PRICE_TTL_MS  = 10 * 60 * 1000;   // reuse market prices for 10 min
     const FORCE_PRICE_TTL_MS = 2 * 60 * 1000; // Refresh only refetches prices older than this
     const INV_MIN_AGE_MS = 60 * 1000;       // Refresh refetches the inventory at most once a minute
@@ -249,7 +250,16 @@
         #tfs-overlay .tfs-controls { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 10px; }
         #tfs-overlay .tfs-controls label { display: flex; align-items: center; gap: 6px; }
         #tfs-overlay .tfs-controls input[type="number"] { width: 72px; text-align: right; }
-        #tfs-overlay .tfs-controls .tfs-btn { margin-left: auto; }
+        #tfs-overlay .tfs-controls #tfs-refresh { margin-left: auto; }
+        #tfs-overlay .tfs-btn.tfs-btn2 { background: var(--tfs-bg2); color: var(--tfs-fg) !important;
+            border: 1px solid var(--tfs-accent); }
+        /* Items page: point at the Flowers tab after "Live counts" */
+        @keyframes tfs-glow { 0%, 100% { box-shadow: 0 0 0 2px #e05aa0; } 50% { box-shadow: 0 0 0 5px rgba(224,90,160,.35); } }
+        [data-tfs-hint] { animation: tfs-glow 1.1s ease-in-out infinite; border-radius: 6px; position: relative; z-index: 2; }
+        #tfs-hintbar { position: fixed; left: 50%; top: 70px; transform: translateX(-50%); z-index: 2147483646;
+            padding: 9px 14px; border-radius: 20px; font: 700 13px Arial, Helvetica, sans-serif; white-space: nowrap;
+            background: var(--tfs-bg); color: var(--tfs-fg); border: 1px solid var(--tfs-accent);
+            box-shadow: 0 6px 20px var(--tfs-shadow); }
         #tfs-overlay input[type="checkbox"] { accent-color: var(--tfs-accent); width: 16px; height: 16px; }
         #tfs-overlay .tfs-summary { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; margin-bottom: 10px; }
         #tfs-overlay .tfs-stat { background: var(--tfs-bg2); border: 1px solid var(--tfs-border); border-radius: 8px;
@@ -376,6 +386,7 @@
                 <label>Target sets <input type="number" id="tfs-target" min="1" step="1" value="${Number(prefs.target) || 1}"></label>
                 <label><input type="checkbox" id="tfs-prices" ${prefs.showPrices ? 'checked' : ''}> Market prices</label>
                 <button class="tfs-btn" id="tfs-refresh">Refresh</button>
+                <button class="tfs-btn tfs-btn2" id="tfs-live" title="Go to Items and read live counts from the Flowers tab (no API call)">Live counts</button>
             </div>
             <div id="tfs-out"><div class="tfs-msg">Loading…</div></div>`;
         const target = b.querySelector('#tfs-target');
@@ -389,6 +400,7 @@
         target.addEventListener('change', onChange);
         prices.addEventListener('change', onChange);
         b.querySelector('#tfs-refresh').addEventListener('click', () => refresh(true));
+        b.querySelector('#tfs-live').addEventListener('click', goLiveCounts);
         refresh(false);
     }
 
@@ -442,8 +454,9 @@
             }
             if (token !== refreshToken) return;
             const target = Math.max(1, Number(prefs.target) || 1);
+            const inv = currentInventory();
             const rows = FLOWERS.map((f) => {
-                const have = lastInv.counts[f.id] || 0;
+                const have = inv.counts[f.id] || 0;
                 return { f, have, missing: Math.max(0, target - have) };
             });
             const sets = Math.min(...rows.map((r) => r.have));
@@ -539,10 +552,127 @@
                     </tr>`).join('')}
             </table>
             <div class="tfs-note">
-                Inventory updated ${ago(lastInv && lastInv.timestamp) || 'recently'} — Torn caches it for up to an hour,
-                so flowers bought just now may not show yet. Items in your display case aren't counted.
+                ${(() => {
+                    const inv = currentInventory();
+                    return inv.source === 'page'
+                        ? `Counts read from your <a href="https://www.torn.com/item.php">Items</a> page ${ago(inv.timestamp) || 'just now'} (live, no API call).`
+                        : `Inventory from the API, updated ${ago(inv.timestamp) || 'recently'} — Torn caches it for up to an hour.
+                           For live counts open <a href="https://www.torn.com/item.php">Items</a> → Flowers once.`;
+                })()}
+                Items in your display case aren't counted.
                 ${showPrices ? 'Costs walk the cheapest item-market listings; "+" means the listings shown didn\'t cover the full amount.' : ''}
             </div>`;
+    }
+
+    // ------------------------------------------------------------ live counts from the Items page
+    // When you open Items → Flowers, Torn's page itself loads that tab with
+    // an item.php "getCategoryList" request whose answer has the live Qty of
+    // every flower. We only listen to that response — no extra request is made
+    // — and use it whenever it's newer than the (up to 1 h cached) API data.
+    const FLOWER_IDS = new Set(FLOWERS.map((f) => f.id));
+
+    function pageSnapshot() {
+        try { const p = JSON.parse(lsGet(LS_PAGEINV) || 'null'); return p && p.counts && p.ts ? p : null; }
+        catch (e) { return null; }
+    }
+    // Newest of: API inventory (timestamp in s) and the Items-page snapshot (ms).
+    function currentInventory() {
+        const page = pageSnapshot();
+        const apiTs = lastInv ? lastInv.timestamp : 0;
+        if (page && (!lastInv || page.ts / 1000 > apiTs)) {
+            return { counts: page.counts, timestamp: Math.floor(page.ts / 1000), source: 'page' };
+        }
+        return { counts: lastInv ? lastInv.counts : {}, timestamp: apiTs, source: 'api' };
+    }
+
+    function captureCategoryList(text) {
+        let data;
+        try { data = JSON.parse(text); } catch (e) { return; }
+        const list = data && Array.isArray(data.list) ? data.list : null;
+        if (!list) return;
+        const counts = {};
+        FLOWERS.forEach((f) => { counts[f.id] = 0; });
+        list.forEach((it) => {
+            if (it.factionItem) return;
+            // `itemID` is the item type; fall back to `ID` if that's absent.
+            const id = FLOWER_IDS.has(Number(it.itemID)) ? Number(it.itemID) : Number(it.ID);
+            if (FLOWER_IDS.has(id)) counts[id] += Number(it.Qty) || 0;
+        });
+        lsSet(LS_PAGEINV, JSON.stringify({ counts, ts: Date.now() }));
+        if (liveRequested()) {
+            // Came here via "Live counts": show the fresh numbers straight away.
+            lsDel(LS_LIVE);
+            clearHint();
+            if (overlay) closePanel();
+            openPanel();
+        } else if (overlay && overlay.querySelector('#tfs-out')) {
+            refresh(false);   // live update if the panel is open
+        }
+    }
+
+    // "Live counts": take the user to their Items page and point at the Flowers
+    // tab. The user taps it; we never click anything ourselves.
+    const LS_LIVE = 'tfs_live_request';
+    const LIVE_WINDOW_MS = 5 * 60 * 1000;
+    const onItemsPage = () => /\/item\.php$/i.test(location.pathname);
+    function liveRequested() {
+        const t = Number(lsGet(LS_LIVE));
+        return t > 0 && Date.now() - t < LIVE_WINDOW_MS;
+    }
+    function goLiveCounts() {
+        lsSet(LS_LIVE, String(Date.now()));
+        if (onItemsPage()) { closePanel(); showHint(); return; }
+        location.href = 'https://www.torn.com/item.php';
+    }
+    let hintTimer = null;
+    function showHint() {
+        injectStyles();
+        if (!document.getElementById('tfs-hintbar')) {
+            const bar = document.createElement('div');
+            bar.id = 'tfs-hintbar';
+            bar.textContent = '🌸 Tap the Flowers tab to update your counts';
+            (document.body || document.documentElement).appendChild(bar);
+        }
+        let tries = 0;
+        clearInterval(hintTimer);
+        hintTimer = setInterval(() => {   // the tab list may render after us
+            const tab = [...document.querySelectorAll('#categoriesList > li')]
+                .find((li) => /^flowers?$/i.test(li.getAttribute('data-type') || ''));
+            if (tab) { tab.setAttribute('data-tfs-hint', ''); clearInterval(hintTimer); }
+            if (++tries > 40) clearInterval(hintTimer);
+        }, 250);
+        // Stop nagging after the request window.
+        setTimeout(clearHint, LIVE_WINDOW_MS);
+    }
+    function clearHint() {
+        clearInterval(hintTimer);
+        const bar = document.getElementById('tfs-hintbar');
+        if (bar) bar.remove();
+        document.querySelectorAll('[data-tfs-hint]').forEach((el) => el.removeAttribute('data-tfs-hint'));
+    }
+
+    function hookItemsPage() {
+        if (!/\/item\.php$/i.test(location.pathname)) return;
+        const X = window.XMLHttpRequest && window.XMLHttpRequest.prototype;
+        if (!X || X.__tfsHooked) return;
+        X.__tfsHooked = true;
+        const open = X.open, send = X.send;
+        X.open = function (method, url) {
+            this.__tfsUrl = String(url || '');
+            return open.apply(this, arguments);
+        };
+        X.send = function (body) {
+            try {
+                let params = null;
+                if (typeof body === 'string') params = new URLSearchParams(body);
+                else if (body && typeof body.get === 'function') params = body;   // URLSearchParams / FormData
+                if (params && /item\.php/i.test(this.__tfsUrl) && params.get('step') === 'getCategoryList' &&
+                    /^flowers?$/i.test(String(params.get('itemName') || ''))) {
+                    this.addEventListener('load', () => captureCategoryList(this.responseText));
+                }
+            } catch (e) { /* never break Torn's own request */ }
+            return send.apply(this, arguments);
+        };
     }
 
     // ------------------------------------------------------------ entry button
@@ -579,6 +709,11 @@
         f.textContent = '🌸';
         f.addEventListener('click', openPanel);
         (document.body || document.documentElement).appendChild(f);
+    }
+
+    hookItemsPage();   // installed right away so no Flowers-tab load is missed
+    if (onItemsPage() && liveRequested()) {
+        if (document.body) showHint(); else document.addEventListener('DOMContentLoaded', showHint);
     }
 
     function start() {
