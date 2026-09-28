@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Flower Set Helper
 // @namespace    https://github.com/nebigoktug
-// @version      2.1.0
+// @version      2.1.1
 // @description  Counts your flowers, shows how many museum flower sets you can make and what's missing for a target, where each flower is sold abroad, what the missing ones cost on the item market, and the profit of exchanging sets for points. Display only, no automation.
 // @author       Nebigoktug
 // @license      MIT
@@ -32,12 +32,15 @@
     // Torn PDA may inject on any URL containing "torn"; only run on the game.
     if (!/^(www\.)?torn\.com$/i.test(location.hostname)) return;
 
-    const VERSION  = '2.1.0';
+    const VERSION  = '2.1.1';
     const REPO_URL = 'https://github.com/nebigoktug/torn-userscripts';
     const LS_KEY   = 'tfs_api_key';
     const LS_PREFS = 'tfs_prefs';
     const LS_PRICES = 'tfs_prices';
     const PRICE_TTL_MS  = 10 * 60 * 1000;   // reuse market prices for 10 min
+    const FORCE_PRICE_TTL_MS = 2 * 60 * 1000; // Refresh only refetches prices older than this
+    const INV_MIN_AGE_MS = 60 * 1000;       // Refresh refetches the inventory at most once a minute
+    const RATE_PAUSE_MS  = 60 * 1000;       // no API calls for this long after "too many requests"
     const REQUEST_GAP_MS = 250;             // spacing between market requests
 
     // IDs verified against TornTools' SETS.FLOWERS list.
@@ -92,7 +95,12 @@
     class ApiError extends Error {
         constructor(code, msg) { super(msg); this.code = code; }
     }
+    // Torn's limit (100 requests/min) is per user and shared with PDA and every
+    // other script. After a "too many requests" we stay quiet for a minute.
+    let pausedUntil = 0;
+    const RATE_MSG = "Torn API limit reached (100/min, shared with PDA and other scripts).";
     async function api(path, key) {
+        if (Date.now() < pausedUntil) throw new ApiError(5, RATE_MSG);
         const sep = path.includes('?') ? '&' : '?';
         let resp;
         try {
@@ -104,6 +112,7 @@
         try { data = await resp.json(); } catch (e) { throw new ApiError(-1, `Unexpected response (HTTP ${resp.status}).`); }
         if (data && data.error) {
             const c = data.error.code;
+            if (c === 5) { pausedUntil = Date.now() + RATE_PAUSE_MS; throw new ApiError(5, RATE_MSG); }
             const msg = {
                 2: 'Incorrect API key.',
                 5: 'Too many requests — wait a minute and try again.',
@@ -132,10 +141,10 @@
 
     // Cheapest listings for one flower; cached for PRICE_TTL_MS.
     function priceCache() { try { return JSON.parse(lsGet(LS_PRICES) || '{}'); } catch (e) { return {}; } }
-    async function fetchListings(id, key) {
+    async function fetchListings(id, key, ttl = PRICE_TTL_MS) {
         const cache = priceCache();
         const c = cache[id];
-        if (c && Date.now() - c.ts < PRICE_TTL_MS) return c.listings;
+        if (c && Date.now() - c.ts < ttl) return c.listings;
         const data = await api(`market/${id}/itemmarket?limit=100`, key);
         const listings = ((data.itemmarket && data.itemmarket.listings) || [])
             .map((l) => ({ price: Number(l.price), amount: Number(l.amount) || 1 }))
@@ -146,10 +155,10 @@
         return listings;
     }
     // Cheapest points-market listing (price per point); cached with the item prices.
-    async function fetchPointPrice(key) {
+    async function fetchPointPrice(key, ttl = PRICE_TTL_MS) {
         const cache = priceCache();
         const c = cache.points;
-        if (c && Date.now() - c.ts < PRICE_TTL_MS) return c.price;
+        if (c && Date.now() - c.ts < ttl) return c.price;
         const data = await api('market/pointsmarket', key);
         const list = Array.isArray(data.pointsmarket) ? data.pointsmarket : Object.values(data.pointsmarket || {});
         const costs = list.map((l) => Number(l.cost)).filter((n) => n > 0);
@@ -343,7 +352,10 @@
             const btn = b.querySelector('#tfs-save');
             btn.disabled = true; btn.textContent = 'Checking…';
             try {
-                await fetchFlowers(key);          // verifies key + access level
+                // Verifies key + access level; the result is reused so the
+                // main view doesn't fetch the inventory a second time.
+                lastInv = await fetchFlowers(key);
+                lastInvAt = Date.now();
                 lsSet(LS_KEY, key);
                 renderMain();
             } catch (e) {
@@ -381,7 +393,37 @@
     }
 
     let lastInv = null;          // { counts, timestamp } — reused when only the target changes
+    let lastInvAt = 0;           // when we last fetched it (ms)
     let refreshToken = 0;        // drops results of superseded refreshes
+
+    // Banner + disabled Refresh button counting down the rate-limit pause.
+    let pauseTimer = null;
+    function showPause() {
+        clearInterval(pauseTimer);
+        const tick = () => {
+            const left = Math.ceil((pausedUntil - Date.now()) / 1000);
+            const btn = overlay && overlay.querySelector('#tfs-refresh');
+            const out = overlay && overlay.querySelector('#tfs-out');
+            let banner = overlay && overlay.querySelector('#tfs-pause');
+            if (!overlay || left <= 0) {
+                clearInterval(pauseTimer);
+                if (banner) banner.remove();
+                if (btn) { btn.disabled = false; btn.textContent = 'Refresh'; }
+                return;
+            }
+            if (!banner && out) {
+                banner = document.createElement('div');
+                banner.id = 'tfs-pause';
+                banner.className = 'tfs-msg err';
+                banner.style.marginBottom = '10px';
+                out.parentNode.insertBefore(banner, out);
+            }
+            if (banner) banner.textContent = `${RATE_MSG} New requests in ${left}s.`;
+            if (btn) { btn.disabled = true; btn.textContent = `Wait ${left}s`; }
+        };
+        tick();
+        pauseTimer = setInterval(tick, 1000);
+    }
 
     async function refresh(force) {
         const out = overlay && overlay.querySelector('#tfs-out');
@@ -390,8 +432,14 @@
         const token = ++refreshToken;
         const btn = overlay.querySelector('#tfs-refresh');
         if (btn) { btn.disabled = true; btn.textContent = 'Loading…'; }
+        // Refresh re-reads only what's stale: Torn caches the inventory for up
+        // to an hour anyway, and prices younger than 2 minutes are kept.
+        const priceTtl = force ? FORCE_PRICE_TTL_MS : PRICE_TTL_MS;
         try {
-            if (force || !lastInv) lastInv = await fetchFlowers(key);
+            if (!lastInv || (force && Date.now() - lastInvAt >= INV_MIN_AGE_MS)) {
+                lastInv = await fetchFlowers(key);
+                lastInvAt = Date.now();
+            }
             if (token !== refreshToken) return;
             const target = Math.max(1, Number(prefs.target) || 1);
             const rows = FLOWERS.map((f) => {
@@ -402,13 +450,12 @@
             renderTable(out, rows, sets, target, null);
 
             if (prefs.showPrices) {
-                if (force) lsDel(LS_PRICES);
                 let total = 0, partial = false;
                 for (const r of rows) {
                     if (token !== refreshToken) return;
                     const cached = priceCache()[r.f.id];
-                    const wasCached = cached && Date.now() - cached.ts < PRICE_TTL_MS;
-                    const listings = await fetchListings(r.f.id, key);
+                    const wasCached = cached && Date.now() - cached.ts < priceTtl;
+                    const listings = await fetchListings(r.f.id, key, priceTtl);
                     const c = costFor(listings, r.missing);
                     r.cheapest = c.cheapest;
                     r.cost = r.missing ? c.cost : 0;
@@ -420,7 +467,7 @@
                     if (!wasCached) await sleep(REQUEST_GAP_MS);
                 }
                 // Points side of the trade: what a set is worth at the museum.
-                const pointPrice = await fetchPointPrice(key);
+                const pointPrice = await fetchPointPrice(key, priceTtl);
                 if (token !== refreshToken) return;
                 const fullSet = rows.every((r) => r.cheapest != null)
                     ? rows.reduce((s, r) => s + r.cheapest, 0) : null;
@@ -429,9 +476,17 @@
         } catch (e) {
             if (token !== refreshToken) return;
             if (e.code === 2) { lsDel(LS_KEY); lastInv = null; renderKeySetup(e.message); return; }
+            if (e.code === 5) {
+                // Keep whatever was already drawn; just count down the pause.
+                if (!out.querySelector('.tfs-table')) out.innerHTML = '';
+                showPause();
+                return;
+            }
             out.innerHTML = `<div class="tfs-msg err">${esc(e.message)}</div>`;
         } finally {
-            if (token === refreshToken && btn && btn.isConnected) { btn.disabled = false; btn.textContent = 'Refresh'; }
+            if (token === refreshToken && btn && btn.isConnected && Date.now() >= pausedUntil) {
+                btn.disabled = false; btn.textContent = 'Refresh';
+            }
         }
     }
 
