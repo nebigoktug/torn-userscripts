@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn FF/BS Badges
 // @namespace    https://github.com/tornffbs
-// @version      2.3.1
+// @version      2.4.0
 // @description  Shows FairFight + estimated Battle Stat badges next to player names on Torn. On faction pages it also adds a live hospital countdown and travel info, can rewrite the member-list Status column with live timers, and can sort/filter the member list. Includes an in-page settings panel (⚙). Works on Torn PDA and desktop Tampermonkey.
 // @author       Nebigoktug
 // @match        https://www.torn.com/*
@@ -56,6 +56,7 @@
         SKIP_CHAT:             true,   // don't badge names inside the chat box
         HIDE_WHEN_NO_DATA:     true,   // draw nothing (not "?") when FF & BS unknown
         SORT_TOOLBAR:          true,   // sort/filter bar above faction member lists
+        HIDE_OWN_FACTION:      true,   // no FF/BS badges on your own faction members
         DEBUG:                 false,  // verbose console logging
         // Cache
         CACHE_HOURS: 72,               // how long FFScouter data is reused before refetch
@@ -174,7 +175,8 @@
 
     const factionStatus = new Map(); // pid -> { state, until, description }
     let factionFetching  = false;
-    let currentFactionId = undefined; // faction id we last fetched status for
+    let currentFactionKey = undefined; // which faction set we last fetched ("123,own")
+    let ownFactionMembers = new Set();  // pids of your own faction (for HIDE_OWN_FACTION)
 
     const userStatus       = new Map(); // pid -> { state, until, description, ts }
     const pendingUserFetch = new Set();  // pids with an in-flight user fetch
@@ -423,6 +425,12 @@
         /* faction list sort/filter */
         [data-ffbs-sorted] { display: flex !important; flex-direction: column !important; }
         [data-ffbs-hidden] { display: none !important; }
+
+        /* war page status: hide Torn's text visually, show our timer */
+        [data-ffbs-war] { font-size: 0 !important; }
+        [data-ffbs-war] > .ffbs-war-status { font-size: 12px; white-space: nowrap; }
+        .ffbs-war-status[data-ffbs-soon] { color: #2ecc40 !important; font-weight: 700;
+            animation: ffbs-pulse 1s ease-in-out infinite; }
         .ffbs-toolbar {
             display: flex; flex-wrap: wrap; align-items: center; gap: 4px;
             padding: 5px 6px; margin: 4px 0; font: 11px Arial, Helvetica, sans-serif;
@@ -590,48 +598,97 @@
         } catch (e) {}
         return null;
     }
+    // Enemy faction on a war page (factions.php#/war/...), read from the
+    // enemy faction's profile link. Null anywhere else.
+    function getEnemyFactionId() {
+        if (!/factions\.php/i.test(location.pathname) || !/\/war\//i.test(location.hash)) return null;
+        const a = document.querySelector('.faction-war .enemy-faction a[href*="step=profile"][href*="ID="], ' +
+                                         '.enemy-faction a[href*="step=profile"][href*="ID="]');
+        const m = a && (a.getAttribute('href') || '').match(/[?&]ID=(\d+)/i);
+        return m ? m[1] : null;
+    }
+    // Factions whose member statuses we keep: the viewed / enemy faction(s)
+    // plus your own (null), which also feeds HIDE_OWN_FACTION.
+    function factionTargets() {
+        const ids = [];
+        const viewed = getViewedFactionId();
+        if (viewed) ids.push(viewed);
+        const enemy = getEnemyFactionId();
+        if (enemy && !ids.includes(enemy)) ids.push(enemy);
+        ids.push(null);
+        return ids;
+    }
+    function factionKey() {
+        return factionTargets().map((f) => f || 'own').join(',');
+    }
+    // Fetch one faction's members. Returns an array, or null on any failure.
+    async function fetchFactionMembers(fid) {
+        const path = fid ? `faction/${fid}/members` : 'faction/members';
+        const resp = await httpGet(`https://api.torn.com/v2/${path}?key=${encodeURIComponent(API_KEY)}`);
+        const cat = classify(resp.status, resp.text);
+        if (cat === 'auth') { clearKeyAndReopenSetup(); return null; }
+        if (handleTornBackoff(cat) || cat !== 'ok') return null;
+        let data;
+        try { data = JSON.parse(resp.text); } catch (e) { return null; }
+        if (data.error) {
+            log(`Faction ${fid || 'own'} members: API error ${data.error.code}.`);
+            return null;
+        }
+        // v2 returns an array of members; tolerate the v1 id-keyed object too.
+        return Array.isArray(data.members) ? data.members
+            : Object.keys(data.members || {}).map((id) => Object.assign({ id: id }, data.members[id]));
+    }
     async function fetchFactionStatuses() {
         if (!API_KEY || factionFetching || Date.now() < tornPausedUntil) return;
         factionFetching = true;
         try {
-            const fid = getViewedFactionId();
-            if (fid !== currentFactionId) {
+            const targets = factionTargets();
+            const key = targets.map((f) => f || 'own').join(',');
+            if (key !== currentFactionKey) {
                 factionStatus.clear();
-                currentFactionId = fid;
+                currentFactionKey = key;
                 tickTimers();
             }
-            const path = fid ? `faction/${fid}/members` : 'faction/members';
-            const resp = await httpGet(`https://api.torn.com/v2/${path}?key=${encodeURIComponent(API_KEY)}`);
-            const cat = classify(resp.status, resp.text);
-            if (cat === 'auth') { clearKeyAndReopenSetup(); return; }
-            if (handleTornBackoff(cat)) return;
-            if (cat !== 'ok') return;
-            let data;
-            try { data = JSON.parse(resp.text); } catch (e) { return; }
-            if (data.error) return;
-            // v2 returns an array of members; tolerate the v1 id-keyed object too.
-            const members = Array.isArray(data.members) ? data.members
-                : Object.keys(data.members || {}).map((id) => Object.assign({ id: id }, data.members[id]));
             const seen = new Set();
-            members.forEach((m) => {
-                const st = m && m.status;
-                if (!st || m.id == null) return;
-                const pid = String(m.id);
-                seen.add(pid);
-                factionStatus.set(pid, {
-                    state: st.state || null,
-                    until: Number(st.until) || 0,
-                    description: st.description || ''
+            let allOk = true;
+            for (const fid of targets) {
+                if (!API_KEY || Date.now() < tornPausedUntil) { allOk = false; break; }
+                const members = await fetchFactionMembers(fid);
+                if (!members) { allOk = false; continue; }
+                const ids = [];
+                members.forEach((m) => {
+                    if (!m || m.id == null) return;
+                    const pid = String(m.id);
+                    ids.push(pid);
+                    const st = m.status;
+                    if (!st) return;
+                    seen.add(pid);
+                    factionStatus.set(pid, {
+                        state: st.state || null,
+                        until: Number(st.until) || 0,
+                        description: st.description || ''
+                    });
                 });
-            });
-            Array.from(factionStatus.keys()).forEach((pid) => { if (!seen.has(pid)) factionStatus.delete(pid); });
-            log(`Faction status: ${seen.size} member(s) (faction ${currentFactionId || 'own'}).`);
+                if (fid === null) updateOwnFaction(ids);
+                log(`Faction status: ${ids.length} member(s) (faction ${fid || 'own'}).`);
+            }
+            // Only prune after a complete refresh, so one failed call doesn't
+            // wipe timers that are still valid.
+            if (allOk) Array.from(factionStatus.keys()).forEach((pid) => { if (!seen.has(pid)) factionStatus.delete(pid); });
             tickTimers();
         } catch (e) {
             log('Faction status fetch failed.', e);
         } finally {
             factionFetching = false;
         }
+    }
+    function updateOwnFaction(ids) {
+        const next = new Set(ids);
+        const changed = new Set();
+        next.forEach((pid) => { if (!ownFactionMembers.has(pid)) changed.add(pid); });
+        ownFactionMembers.forEach((pid) => { if (!next.has(pid)) changed.add(pid); });
+        ownFactionMembers = next;
+        if (changed.size) applyAllResolved(changed); // show/hide their FF/BS badges
     }
 
     /* =======================================================================
@@ -781,7 +838,17 @@
      * moved or re-parented, so React's DOM bookkeeping stays intact; if React
      * replaces the link, the MutationObserver sees the new one and re-badges it.
      * ===================================================================== */
+    function isHiddenOwn(pid) {
+        return !!S.HIDE_OWN_FACTION && ownFactionMembers.has(pid);
+    }
     function applyBadges(link, pid) {
+        if (isHiddenOwn(pid)) {
+            // Teammate: no FF/BS, but keep the hospital/travel pill.
+            link.querySelectorAll('.ffbs-badge:not(.ffbs-timer)').forEach((b) => b.remove());
+            link.setAttribute(BADGE_ATTR, pid);
+            applyTimerBadge(link, pid);
+            return;
+        }
         const data = statsCache.get(pid);
         if (!data) return;
         const ffKnown = data.ff != null && !isNaN(data.ff);
@@ -868,7 +935,7 @@
     // so their already-badged links are redrawn with the new values too.
     function applyAllResolved(refreshed) {
         playerLinks().forEach(({ link, pid }) => {
-            if (!statsCache.has(pid)) return;
+            if (!statsCache.has(pid) && !isHiddenOwn(pid)) return;
             if (link.getAttribute(BADGE_ATTR) === pid && !(refreshed && refreshed.has(pid))) return;
             applyBadges(link, pid);
         });
@@ -918,6 +985,36 @@
             if (soon) span.setAttribute('data-ffbs-soon', '1');
             else span.removeAttribute('data-ffbs-soon');
         });
+        enhanceWarStatusCells();
+    }
+    // War page rows (.faction-war .members-list > li) have a plain `.status`
+    // element. Torn's own text is left untouched (hidden via CSS font-size:0
+    // while ours is shown), so React can keep updating it safely.
+    function enhanceWarStatusCells() {
+        document.querySelectorAll('.faction-war .members-list > li .status').forEach((el) => {
+            const row = el.closest('li');
+            const pid = row && rowPid(row);
+            if (!pid) return;
+            const status = factionStatus.get(pid);
+            const text = buildStatusText(status);
+            let t = el.querySelector('.ffbs-war-status');
+            if (text == null) {
+                if (t) t.remove();
+                el.removeAttribute('data-ffbs-war');
+                return;
+            }
+            if (!t) { t = document.createElement('span'); t.className = 'ffbs-war-status'; el.appendChild(t); }
+            if (t.textContent !== text) t.textContent = text;
+            if (!el.hasAttribute('data-ffbs-war')) el.setAttribute('data-ffbs-war', '');
+            const soon = status.state === 'Hospital' &&
+                hospSoon(status.until - Math.floor(Date.now() / 1000));
+            if (soon) t.setAttribute('data-ffbs-soon', '1');
+            else t.removeAttribute('data-ffbs-soon');
+        });
+    }
+    function restoreWarStatusCells() {
+        document.querySelectorAll('.ffbs-war-status').forEach((t) => t.remove());
+        document.querySelectorAll('[data-ffbs-war]').forEach((el) => el.removeAttribute('data-ffbs-war'));
     }
 
     /* =======================================================================
@@ -944,8 +1041,10 @@
     }
     function memberListGroups() {
         const groups = new Map(); // container -> rows[]
-        document.querySelectorAll('.table-row').forEach((row) => {
-            if (!row.querySelector('.table-cell.status') || !rowPid(row)) return;
+        // Faction page rows, plus both member lists on a war page.
+        document.querySelectorAll('.table-row, .faction-war .members-list > li').forEach((row) => {
+            const isWar = row.parentElement && row.parentElement.classList.contains('members-list');
+            if (!row.querySelector(isWar ? '.status' : '.table-cell.status') || !rowPid(row)) return;
             const c = row.parentElement;
             if (!c) return;
             if (!groups.has(c)) groups.set(c, []);
@@ -1052,9 +1151,13 @@
      * ===================================================================== */
     function scanPage() {
         if (!API_KEY) return;
-        if (getViewedFactionId() !== currentFactionId) fetchFactionStatuses();
+        if (factionKey() !== currentFactionKey) fetchFactionStatuses();
         const ttl = statsTtlMs();
         playerLinks().forEach(({ link, pid }) => {
+            if (isHiddenOwn(pid)) {
+                if (link.getAttribute(BADGE_ATTR) !== pid) applyBadges(link, pid);
+                return; // no FFScouter lookup needed for teammates
+            }
             const cached = statsCache.get(pid);
             const fresh  = cached && (Date.now() - (cached.ts || 0) < ttl);
             if (cached && link.getAttribute(BADGE_ATTR) !== pid) applyBadges(link, pid);
@@ -1281,6 +1384,7 @@
                 ${toggleRow('SKIP_CHAT', 'Skip chat box', "Don't badge names inside chat")}
                 ${toggleRow('HIDE_WHEN_NO_DATA', 'Hide empty badges', 'Draw nothing when FF & BS unknown')}
                 ${toggleRow('SORT_TOOLBAR', 'Faction list sort bar', 'Sort by FF / BS / hospital, filter Okay')}
+                ${toggleRow('HIDE_OWN_FACTION', 'Hide badges on my faction', 'No FF/BS on teammates (timers stay)')}
                 ${numRow('HOSP_ALERT_SEC', 'Hospital alert (sec)', 'Pulse when this little time is left (0 = off)', '10')}
 
                 <div class="ffbs-section">Cache</div>
@@ -1320,7 +1424,7 @@
         // settings, or an error string if the thresholds are out of order.
         const collect = () => {
             const next = Object.assign({}, S);
-            const boolKeys = ['SHOW_NAME_TIMER_BADGE', 'ENHANCE_STATUS_CELL', 'SKIP_CHAT', 'HIDE_WHEN_NO_DATA', 'SORT_TOOLBAR', 'DEBUG'];
+            const boolKeys = ['SHOW_NAME_TIMER_BADGE', 'ENHANCE_STATUS_CELL', 'SKIP_CHAT', 'HIDE_WHEN_NO_DATA', 'SORT_TOOLBAR', 'HIDE_OWN_FACTION', 'DEBUG'];
             const numKeys  = ['FF_GREEN', 'FF_YELLOW', 'FF_ORANGE', 'BS_YELLOW', 'BS_ORANGE', 'CACHE_HOURS', 'HOSP_ALERT_SEC'];
             boolKeys.forEach((k) => { const el = overlay.querySelector(`#cfg-${k}`); if (el) next[k] = el.checked; });
             numKeys.forEach((k) => {
@@ -1348,8 +1452,10 @@
                     span.textContent = span.getAttribute('data-ffbs-orig');
                     span.removeAttribute('data-ffbs-orig');
                 });
+                restoreWarStatusCells();
             }
             tickTimers();
+            scanPage(); // e.g. teammates un-hidden -> queue their lookups now
         };
 
         overlay.querySelector('#cfg-save').addEventListener('click', () => {
