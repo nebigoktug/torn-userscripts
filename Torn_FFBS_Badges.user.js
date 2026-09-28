@@ -1,9 +1,11 @@
 // ==UserScript==
 // @name         Torn FF/BS Badges
 // @namespace    https://github.com/tornffbs
-// @version      2.5.1
-// @description  Shows FairFight + estimated Battle Stat badges next to player names on Torn. On faction pages it also adds a live hospital countdown and travel info, can rewrite the member-list Status column with live timers, and can sort/filter the member list. Includes an in-page settings panel (⚙). Works on Torn PDA and desktop Tampermonkey.
+// @version      2.5.2
+// @description  FairFight + estimated battle-stat badges next to player names (via FFScouter), live hospital/travel timers and a sort/filter bar on faction and war member lists, with an in-page settings panel. Needs a Torn API key registered with FFScouter. Works on Torn PDA and desktop userscript managers.
 // @author       Nebigoktug
+// @license      MIT
+// @supportURL   https://github.com/nebigoktug/torn-userscripts/issues
 // @match        https://www.torn.com/*
 // @match        https://torn.com/*
 // @grant        GM_xmlhttpRequest
@@ -29,7 +31,7 @@
     /* =======================================================================
      * CONFIG DEFAULTS  — user-overridable ones live in SETTINGS (⚙ panel)
      * ===================================================================== */
-    const VERSION        = '2.5.1';           // keep in sync with @version
+    const VERSION        = '2.5.2';           // keep in sync with @version
     const REPO_URL       = 'https://github.com/nebigoktug/torn-userscripts';
     const LS_KEY         = 'ffbs_api_key';    // where the key is stored locally
     const LS_SETTINGS    = 'ffbs_settings';   // where the ⚙ panel settings live
@@ -580,6 +582,16 @@
         #ffbs-setup button:disabled { opacity: 0.6; cursor: default; }
         #ffbs-setup .ffbs-msg  { margin-top: 10px; font-size: 12px; min-height: 16px; }
         #ffbs-setup .ffbs-err  { color: #ff6b61; }
+        #ffbs-setup .ffbs-card { max-height: 90vh; overflow-y: auto; }
+        #ffbs-setup .ffbs-tos { margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--ffbs-border); }
+        #ffbs-setup .ffbs-tos-title { font-size: 11px; font-weight: 700; text-transform: uppercase;
+            letter-spacing: .5px; color: var(--ffbs-muted); margin-bottom: 6px; }
+        #ffbs-setup .ffbs-tos table { width: 100%; border-collapse: collapse; font-size: 11px; }
+        #ffbs-setup .ffbs-tos th, #ffbs-setup .ffbs-tos td { text-align: left; vertical-align: top;
+            padding: 4px 4px; border-bottom: 1px solid var(--ffbs-border); }
+        #ffbs-setup .ffbs-tos th { width: 34%; color: var(--ffbs-fg); font-weight: 700; }
+        #ffbs-setup .ffbs-tos td { color: var(--ffbs-muted); }
+        #ffbs-setup .ffbs-tos-foot { font-size: 11px; color: var(--ffbs-muted); margin-top: 6px; }
         #ffbs-setup .ffbs-info { color: #d4a800; }
         #ffbs-setup .ffbs-close, #ffbs-config .ffbs-close {
             position: absolute; top: 8px; right: 10px; width: 28px; height: 28px; padding: 0;
@@ -1405,6 +1417,21 @@
         b.addEventListener('click', () => { b.remove(); showSetupCard(); });
         (document.body || document.documentElement).appendChild(b);
     }
+    // Torn API ToS: how the key is used must be shown where the key is entered.
+    const TOS_ROWS = [
+        ['Data storage', 'Only locally: settings and the FF/BS cache stay in this browser.'],
+        ['Data sharing', 'Nobody. The player IDs on the page are sent to FFScouter to look up their estimates.'],
+        ['Purpose of use', 'Competitive advantage: FF / battle-stat estimates and hospital / travel timers for choosing targets.'],
+        ['Key storage & sharing', 'Stored locally on this device. Shared with FFScouter (ffscouter.com) to fetch estimates.'],
+        ['Key access level', 'Public. Limited is recommended (user → battlestats, used to colour BS badges).'],
+    ];
+    const TOS_TABLE_HTML = `
+        <div class="ffbs-tos">
+            <div class="ffbs-tos-title">How your API key is used</div>
+            <table>${TOS_ROWS.map(([k, v]) => `<tr><th>${k}</th><td>${v}</td></tr>`).join('')}</table>
+            <div class="ffbs-tos-foot">See also
+                <a href="https://ffscouter.com/privacy" target="_blank" rel="noopener">FFScouter's privacy policy</a>.</div>
+        </div>`;
     function showSetupCard() {
         if (document.getElementById('ffbs-setup')) return;
         const reopen = document.getElementById('ffbs-reopen');
@@ -1418,12 +1445,12 @@
                 <p>Enter the API key you signed up to
                    <a href="https://ffscouter.com" target="_blank" rel="noopener">FFScouter</a> with
                    (free). It only works with a registered key. Create one at
-                   <a href="https://www.torn.com/preferences.php#tab=api" target="_blank" rel="noopener">Torn → Settings → API Keys</a>.
-                   Stored locally on this device only.</p>
+                   <a href="https://www.torn.com/preferences.php#tab=api" target="_blank" rel="noopener">Torn → Settings → API Keys</a>.</p>
                 <input type="text" id="ffbs-key-input" placeholder="Your FFScouter-registered API key"
                        autocomplete="off" spellcheck="false" />
                 <button id="ffbs-save-btn">Save &amp; Verify</button>
                 <div class="ffbs-msg" id="ffbs-setup-msg"></div>
+                ${TOS_TABLE_HTML}
             </div>`;
         (document.body || document.documentElement).appendChild(overlay);
         const input = overlay.querySelector('#ffbs-key-input');
