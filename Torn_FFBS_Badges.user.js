@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn FF/BS Badges
 // @namespace    https://github.com/tornffbs
-// @version      2.5.0
+// @version      2.5.1
 // @description  Shows FairFight + estimated Battle Stat badges next to player names on Torn. On faction pages it also adds a live hospital countdown and travel info, can rewrite the member-list Status column with live timers, and can sort/filter the member list. Includes an in-page settings panel (⚙). Works on Torn PDA and desktop Tampermonkey.
 // @author       Nebigoktug
 // @match        https://www.torn.com/*
@@ -29,7 +29,7 @@
     /* =======================================================================
      * CONFIG DEFAULTS  — user-overridable ones live in SETTINGS (⚙ panel)
      * ===================================================================== */
-    const VERSION        = '2.5.0';           // keep in sync with @version
+    const VERSION        = '2.5.1';           // keep in sync with @version
     const REPO_URL       = 'https://github.com/nebigoktug/torn-userscripts';
     const LS_KEY         = 'ffbs_api_key';    // where the key is stored locally
     const LS_SETTINGS    = 'ffbs_settings';   // where the ⚙ panel settings live
@@ -63,6 +63,7 @@
         // Appearance
         BADGE_STYLE: 'classic',        // classic | solid | bright
         BADGE_SIZE:  's',              // s | m | l
+        BADGE_PLACEMENT: 'auto',       // auto (inline after text names, corner on images) | corner
         THEME:       'auto',           // auto (follow Torn) | dark | light
         // Cache
         CACHE_HOURS: 72,               // how long FFScouter data is reused before refetch
@@ -499,6 +500,12 @@
         .ffbs-grey   { --ffbs-c: #aaaaaa; --ffbs-f: rgba(170,170,170,0.5); }
         ${badgeStyleCss()}
         .ffbs-badge.ffbs-loading { opacity: 0.55; animation: ffbs-pulse 1.4s ease-in-out infinite; }
+        /* text name links: badges flow inline right after the name */
+        a[data-ffbs-inline] > .ffbs-badge {
+            position: static !important; display: inline-flex !important; vertical-align: middle;
+            margin-left: 3px; top: auto; right: auto; bottom: auto; left: auto;
+        }
+        a[data-ffbs-inline] > .ffbs-badge.ffbs-ff { margin-left: 4px; }
 
         .ffbs-timer {
             top: -7px; left: -7px; border-radius: 7px; border: 1.5px solid;
@@ -981,10 +988,29 @@
      * moved or re-parented, so React's DOM bookkeeping stays intact; if React
      * replaces the link, the MutationObserver sees the new one and re-badges it.
      * ===================================================================== */
+    // Plain text name links (newspaper bylines, forum posts, lists) get their
+    // badges inline right after the name; image links (avatars, honor-bar
+    // name banners) keep the corner overlay.
+    function isTextLink(link) {
+        if (link.querySelector('img, svg, picture, canvas, [style*="background"]')) return false;
+        let text = '';
+        link.childNodes.forEach((n) => {
+            if (n.nodeType === 1 && n.classList.contains('ffbs-badge')) return;
+            text += n.textContent;
+        });
+        return text.trim().length > 0;
+    }
+    function markPlacement(link) {
+        const inline = S.BADGE_PLACEMENT !== 'corner' && isTextLink(link);
+        if (inline) { if (!link.hasAttribute('data-ffbs-inline')) link.setAttribute('data-ffbs-inline', ''); }
+        else if (link.hasAttribute('data-ffbs-inline')) link.removeAttribute('data-ffbs-inline');
+    }
+
     // Faint "…" in the FF slot while a player's first lookup is in flight.
     // applyBadges() replaces it (or removes it when there's no data).
     function showLoading(link) {
         if (link.hasAttribute('data-ffbs-loading') && link.querySelector('.ffbs-loading')) return;
+        markPlacement(link);
         const b = document.createElement('span');
         b.className = 'ffbs-badge ffbs-ff ffbs-grey ffbs-loading';
         b.textContent = '…';
@@ -1000,6 +1026,7 @@
             link.querySelectorAll('.ffbs-badge:not(.ffbs-timer)').forEach((b) => b.remove());
             link.removeAttribute('data-ffbs-loading');
             link.setAttribute(BADGE_ATTR, pid);
+            markPlacement(link);
             applyTimerBadge(link, pid);
             return;
         }
@@ -1010,6 +1037,7 @@
         link.querySelectorAll('.ffbs-badge:not(.ffbs-timer)').forEach((b) => b.remove());
         link.removeAttribute('data-ffbs-loading');
         link.setAttribute(BADGE_ATTR, pid);
+        markPlacement(link);
         if (S.HIDE_WHEN_NO_DATA && !ffKnown && !bsKnown) {
             applyTimerBadge(link, pid);
             return;
@@ -1574,6 +1602,7 @@
                     <div class="ffbs-preview" id="cfg-preview"></div>
                     ${selRow('BADGE_STYLE', 'Badge style', 'How FF / BS badges are drawn', opts(BADGE_STYLES))}
                     ${selRow('BADGE_SIZE', 'Badge size', 'Bigger is easier to read on a phone', opts(BADGE_SIZES))}
+                    ${selRow('BADGE_PLACEMENT', 'Badge position', 'Auto: next to text names, corner on avatars', { auto: 'Auto', corner: 'Always corner' })}
                     ${selRow('THEME', 'Panel theme', 'Settings, toolbar and setup card', THEMES)}
                 `, true)}
                 ${section('Features', `
@@ -1671,7 +1700,7 @@
             const next = Object.assign({}, S);
             const boolKeys = ['SHOW_NAME_TIMER_BADGE', 'ENHANCE_STATUS_CELL', 'SKIP_CHAT', 'HIDE_WHEN_NO_DATA', 'SORT_TOOLBAR', 'HIDE_OWN_FACTION', 'DEBUG'];
             const numKeys  = ['FF_GREEN', 'FF_YELLOW', 'FF_ORANGE', 'BS_YELLOW', 'BS_ORANGE', 'CACHE_HOURS', 'HOSP_ALERT_SEC'];
-            const selKeys  = ['BADGE_STYLE', 'BADGE_SIZE', 'THEME'];
+            const selKeys  = ['BADGE_STYLE', 'BADGE_SIZE', 'BADGE_PLACEMENT', 'THEME'];
             boolKeys.forEach((k) => { const el = $(`cfg-${k}`); if (el) next[k] = el.checked; });
             numKeys.forEach((k) => {
                 const el = $(`cfg-${k}`);
