@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn FF/BS Badges
 // @namespace    https://github.com/tornffbs
-// @version      2.3.0
+// @version      2.3.1
 // @description  Shows FairFight + estimated Battle Stat badges next to player names on Torn. On faction pages it also adds a live hospital countdown and travel info, can rewrite the member-list Status column with live timers, and can sort/filter the member list. Includes an in-page settings panel (⚙). Works on Torn PDA and desktop Tampermonkey.
 // @author       Nebigoktug
 // @match        https://www.torn.com/*
@@ -483,6 +483,9 @@
             box-shadow: 0 3px 12px rgba(0,0,0,0.5); font-family: Arial, Helvetica, sans-serif;
         }
         #ffbs-gear:hover { color: #fff; border-color: #2ecc40; }
+        /* ⚙ inside Torn's footer button row: keeps Torn's button class, own colour */
+        [data-ffbs-gear] { background: linear-gradient(to bottom, #2ecc40, #1a7a26) !important; }
+        [data-ffbs-gear]:hover { background: linear-gradient(to bottom, #3ee052, #2ecc40) !important; }
 
         /* ---- Settings panel (reuses setup overlay look) ---- */
         #ffbs-config { position: fixed; inset: 0; z-index: 2147483647; background: rgba(0,0,0,0.85);
@@ -1059,6 +1062,7 @@
         });
         if (pending.size > 0) scheduleFetch();
         applyListSort();
+        showGearButton();
     }
     function scheduleScan() {
         if (scanDebounce) return;
@@ -1066,7 +1070,7 @@
     }
     // Our own UI nodes; mutations that only add these are ignored so badge
     // updates can't trigger a rescan loop.
-    const OWN_NODES = '.ffbs-badge, .ffbs-toolbar, #ffbs-setup, #ffbs-config, #ffbs-gear, #ffbs-reopen, #ffbs-styles';
+    const OWN_NODES = '.ffbs-badge, .ffbs-toolbar, #ffbs-setup, #ffbs-config, #ffbs-gear, [data-ffbs-gear], #ffbs-reopen, #ffbs-styles';
     function startObserver() {
         if (observer || typeof MutationObserver !== 'function') return;
         observer = new MutationObserver((mutations) => {
@@ -1196,14 +1200,58 @@
     /* =======================================================================
      * SETTINGS PANEL (⚙)
      * ===================================================================== */
+    // Torn's footer panel buttons (same anchor the Bounty Hunter script uses).
+    function findFooterRefBtn() {
+        return document.getElementById('notes_panel_button') ||
+               document.getElementById('people_panel_button');
+    }
+    const GEAR_SVG = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24"%CLS%>' +
+        '<path fill="#f0f0f0" d="M19.14 12.94c.04-.3.06-.61.06-.94s-.02-.64-.07-.94l2.03-1.58a.49.49 0 0 0 .12-.61' +
+        'l-1.92-3.32a.49.49 0 0 0-.59-.22l-2.39.96a7.03 7.03 0 0 0-1.62-.94l-.36-2.54A.48.48 0 0 0 13.92 2h-3.84' +
+        'a.48.48 0 0 0-.48.41l-.36 2.54c-.59.24-1.13.56-1.62.94l-2.39-.96a.49.49 0 0 0-.59.22L2.72 8.47' +
+        'a.48.48 0 0 0 .12.61l2.03 1.58c-.05.3-.07.62-.07.94s.02.64.07.94l-2.03 1.58a.49.49 0 0 0-.12.61' +
+        'l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84' +
+        'c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32' +
+        'a.47.47 0 0 0-.12-.61l-2.01-1.58zM12 15.6A3.6 3.6 0 1 1 12 8.4a3.6 3.6 0 0 1 0 7.2z"/></svg>';
+    // Put the ⚙ button among Torn's footer panel buttons (next to Bounty
+    // Hunter's icon) when they exist; otherwise fall back to the floating
+    // button. Called on every scan, so it re-mounts after Torn's SPA
+    // re-renders the footer.
     function showGearButton() {
-        if (document.getElementById('ffbs-gear')) return;
-        const b = document.createElement('button');
-        b.id = 'ffbs-gear';
-        b.textContent = '⚙';
-        b.title = 'FF/BS Badges settings';
-        b.addEventListener('click', showConfigPanel);
-        (document.body || document.documentElement).appendChild(b);
+        const ref = findFooterRefBtn();
+        const inBar = document.querySelector('[data-ffbs-gear]');
+        const floating = document.getElementById('ffbs-gear');
+        if (ref && ref.parentNode) {
+            if (inBar && inBar.parentNode === ref.parentNode) { if (floating) floating.remove(); return; }
+            if (inBar) inBar.remove();
+            const svg = ref.querySelector('svg');
+            const svgCls = (svg && svg.className && svg.className.baseVal) || '';
+            const b = document.createElement('button');
+            b.type = 'button';
+            b.className = ref.className;
+            b.title = 'FF/BS Badges settings';
+            b.setAttribute('data-ffbs-gear', '');
+            b.innerHTML = GEAR_SVG.replace('%CLS%', svgCls ? ` class="${svgCls}"` : '');
+            b.addEventListener('click', (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                showConfigPanel();
+            });
+            try {
+                ref.parentNode.insertBefore(b, ref);
+                if (floating) floating.remove();
+                return;
+            } catch (e) { b.remove(); }
+        } else if (inBar) {
+            inBar.remove();
+        }
+        if (floating) return;
+        const f = document.createElement('button');
+        f.id = 'ffbs-gear';
+        f.textContent = '⚙';
+        f.title = 'FF/BS Badges settings';
+        f.addEventListener('click', showConfigPanel);
+        (document.body || document.documentElement).appendChild(f);
     }
     function showConfigPanel() {
         if (document.getElementById('ffbs-config')) return;
