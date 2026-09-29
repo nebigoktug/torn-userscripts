@@ -8,6 +8,7 @@ Torn City userscripts.
 | [Torn Graffiti Helper](Torn_Graffiti_Helper.user.js) | Rep progress, colour suggestions and crew/CS100 targets on the graffiti crime page. [Greasy Fork](https://greasyfork.org/en/scripts/587425-torn-graffiti-helper) |
 | [Torn Museum Set Helper](Torn_Museum_Set_Helper.user.js) | Every museum set: flowers, plushies and artifacts. Counts what you own, complete sets and what's missing for a target, where flowers and plushies are sold abroad, market cost of the missing items and the points profit (Museum Day aware). Replaces the Flower Set Helper. |
 | [Torn Flower Set Helper](Torn_Flower_Set_Helper.user.js) | Superseded by the Museum Set Helper. |
+| [Torn Pre-flight Checklist](Torn_Preflight_Checklist.user.js) | Before you fly: will energy/nerve cap while you're away, will drug/booster cooldowns run out mid-trip, is your cash right (ticket, shopping budget, mug risk), and is there a ranked war, chain or OC you'd miss. Uses the real round trip for your destination and flight type; a summary banner on the Travel Agency. |
 | [Torn Shoplifting Assistant](shoplifting-assistant.user.js) | Shoplifting helper. |
 | [Torn Panel Boilerplate](Torn_Panel_Boilerplate.user.js) | Reusable panel boilerplate for new scripts. |
 
