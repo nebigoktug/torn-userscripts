@@ -4,9 +4,10 @@ Torn City userscripts.
 
 | Script | What it does |
 |---|---|
-| [Torn FF/BS Badges](Torn_FFBS_Badges.user.js) | FairFight + estimated battle-stat badges next to player names (via FFScouter), live hospital/travel timers and a sort/filter bar on faction and war member lists. Works on Torn PDA and desktop. |
+| [Torn FF/BS Badges](Torn_FFBS_Badges.user.js) | FairFight + estimated battle-stat badges next to player names (via FFScouter), live hospital/travel timers, a sort/filter bar on faction and war member lists, and a don't-attack list with an attack-page warning. Works on Torn PDA and desktop. |
 | [Torn Graffiti Helper](Torn_Graffiti_Helper.user.js) | Rep progress, colour suggestions and crew/CS100 targets on the graffiti crime page. [Greasy Fork](https://greasyfork.org/en/scripts/587425-torn-graffiti-helper) |
-| [Torn Flower Set Helper](Torn_Flower_Set_Helper.user.js) | Counts your flowers, complete museum sets and what's missing for a target, where each flower is sold abroad, and what the missing ones cost on the item market. |
+| [Torn Museum Set Helper](Torn_Museum_Set_Helper.user.js) | Every museum set: flowers, plushies and artifacts. Counts what you own, complete sets and what's missing for a target, where flowers and plushies are sold abroad, market cost of the missing items and the points profit (Museum Day aware). Replaces the Flower Set Helper. |
+| [Torn Flower Set Helper](Torn_Flower_Set_Helper.user.js) | Superseded by the Museum Set Helper. |
 | [Torn Shoplifting Assistant](shoplifting-assistant.user.js) | Shoplifting helper. |
 | [Torn Panel Boilerplate](Torn_Panel_Boilerplate.user.js) | Reusable panel boilerplate for new scripts. |
 
