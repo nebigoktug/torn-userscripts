@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Torn Pre-flight Checklist
 // @namespace    https://github.com/nebigoktug
-// @version      1.0.0
-// @description  Before you fly: will your energy or nerve cap while you're away, will a drug / booster cooldown run out mid-flight, is your cash right for the trip, and is there a ranked war, chain or Organized Crime you'd miss. Checks against the real round-trip time for your destination and flight type. Display only, no automation.
+// @version      1.1.0
+// @description  Before you fly: will your energy or nerve cap while you're away, will a drug / booster cooldown run out mid-flight, is your cash right for the trip, and is there a ranked war, chain or Organized Crime you'd miss. Checks against the real round-trip time for the destination and flight type you pick on the Travel Agency. Display only, no automation.
 // @author       Nebigoktug
 // @license      MIT
 // @supportURL   https://github.com/nebigoktug/torn-userscripts/issues
@@ -33,7 +33,7 @@
     // Torn PDA may inject on any URL containing "torn"; only run on the game.
     if (!/^(www\.)?torn\.com$/i.test(location.hostname)) return;
 
-    const VERSION  = '1.0.0';
+    const VERSION  = '1.1.0';
     const REPO_URL = 'https://github.com/nebigoktug/torn-userscripts';
     const LS_KEY   = 'tpc_api_key';
     const LS_PREFS = 'tpc_prefs';
@@ -58,6 +58,25 @@
     ];
     const METHODS = { Standard: 'Standard', Airstrip: 'Airstrip', Private: 'Private (WLT)', Business: 'Business class' };
     const BOOK_FACTOR = 0.75;
+    const CHAIN_MIN = 10;        // chains below this aren't worth a warning
+    const OC_MARGIN = 1.5;       // warn when the OC is ready within 1.5x the round trip
+
+    // How a destination shows up on the Travel Agency: country, city, or the
+    // map pin image name (e.g. "pinpoints_switzerland").
+    const DEST_PATTERNS = {
+        'Mexico':         /mexico|ciudad ju[aá]rez/i,
+        'Cayman Islands': /cayman|george ?town/i,
+        'Canada':         /canada|toronto/i,
+        'Hawaii':         /hawaii|honolulu/i,
+        'United Kingdom': /united[\s_-]*kingdom|london|pinpoints_uk\b|\bUK\b/i,
+        'Argentina':      /argentina|buenos aires/i,
+        'Switzerland':    /switzerland|z[uü]rich/i,
+        'Japan':          /japan|tokyo/i,
+        'China':          /china|beijing/i,
+        'UAE':            /\bUAE\b|united arab emirates|dubai/i,
+        'South Africa':   /south[\s_-]*africa|johannesburg/i,
+    };
+    const METHOD_PATTERNS = { Standard: /\bstandard\b/i, Airstrip: /\bairstrip\b/i, Private: /\bprivate\b|\bWLT\b/i, Business: /\bbusiness\b/i };
 
     const DEFAULT_PREFS = { dest: '', method: '', book: false, stayMin: 5, budget: 0 };
 
@@ -236,14 +255,17 @@
             }
         }
         const ch = bars.chain;
-        if (ch && Number(ch.current) > 0 && Number(ch.timeout) > 0) {
+        if (ch && Number(ch.current) >= CHAIN_MIN && Number(ch.timeout) > 0) {
             out.faction.push({ level: 'warn', title: 'Chain', text: `Your faction is chaining (${ch.current} hits, ${dur(ch.timeout)} to the next hit). You can't help from abroad.` });
         }
         const oc = u.organizedCrime;
         if (oc && oc.status && (oc.status === 'Planning' || oc.status === 'Recruiting')) {
             const ready = Number(oc.ready_at) || 0;
             if (ready && ready > t && ready - t < away) {
-                out.faction.push({ level: 'warn', title: 'Organized Crime', text: `${esc(oc.name)} is ready in ${dur(ready - t)}, before you're back.` });
+                out.faction.push({ level: 'bad', title: 'Organized Crime', text: `${esc(oc.name)} is ready in ${dur(ready - t)}, before you're back (${dur(away)}).` });
+            } else if (ready && ready > t && ready - t < away * OC_MARGIN) {
+                out.faction.push({ level: 'warn', title: 'Organized Crime',
+                    text: `${esc(oc.name)} is ready in ${dur(ready - t)}: only ${dur(ready - t - away)} after you're back. Cutting it close if the trip runs long.` });
             } else if (ready && ready > t) {
                 out.faction.push({ level: 'ok', title: 'Organized Crime', text: `${esc(oc.name)} is ready in ${dur(ready - t)}, after you're back.` });
             } else {
@@ -478,7 +500,8 @@
                 ${SECTIONS.map(([k, title]) => checks[k].length ? `<h3>${title}</h3>` + checks[k].map((c) => `
                     <div class="tpc-item ${c.level}"><span class="tpc-ic">${ICON[c.level]}</span>
                         <div><b>${c.title}</b><span>${c.text}</span></div></div>`).join('') : '').join('')}
-                <div class="tpc-note">Flight times are the Torn wiki's base times (±3% variance on every flight).
+                <div class="tpc-note">On the Travel Agency, the country and flight type you tap there are picked up here.
+                    Flight times are the Torn wiki's base times (±3% variance on every flight).
                     Data from the Torn API, ${Math.round((Date.now() - data.ts) / 1000)}s old.</div>`;
             updateBanner();
         } catch (e) {
@@ -488,6 +511,48 @@
             if (btn && btn.isConnected) { btn.disabled = false; btn.textContent = 'Refresh'; }
         }
     }
+
+    // ------------------------------------------------------------ trip from your clicks
+    // On the Travel Agency, when you tap a country (or a flight type) the
+    // checklist follows it. We only read what you tapped; the click itself
+    // goes through to Torn untouched.
+    function matchOne(patterns, hay) {
+        const hits = Object.keys(patterns).filter((k) => patterns[k].test(hay));
+        return hits.length === 1 ? hits[0] : null;
+    }
+    function tripFromClick(target) {
+        let dest = null, method = null;
+        for (let el = target, i = 0; el && el !== document.body && i < 8 && !(dest && method); el = el.parentElement, i++) {
+            const bits = [el.getAttribute && el.getAttribute('aria-label'), el.getAttribute && el.getAttribute('title'),
+                el.getAttribute && el.getAttribute('alt'), el.style && el.style.backgroundImage,
+                el.querySelector && (el.querySelector('img') || {}).src];
+            const text = (el.textContent || '').trim();
+            if (text.length <= 120) bits.push(text);
+            const hay = bits.filter(Boolean).join(' | ');
+            if (!hay) continue;
+            // An element naming several countries is a whole list: stop, it's not a pick.
+            const destHits = Object.keys(DEST_PATTERNS).filter((k) => DEST_PATTERNS[k].test(hay));
+            if (destHits.length > 1) break;
+            if (!dest && destHits.length === 1) dest = destHits[0];
+            if (!method) method = matchOne(METHOD_PATTERNS, hay);
+        }
+        return { dest, method };
+    }
+    function onTravelClick(e) {
+        if (!onTravelPage() || (overlay && overlay.contains(e.target))) return;
+        const banner = document.getElementById('tpc-banner');
+        if (banner && banner.contains(e.target)) return;
+        const { dest, method } = tripFromClick(e.target);
+        const next = {};
+        if (dest && dest !== prefs.dest) next.dest = dest;
+        if (method && method !== prefs.method) next.method = method;
+        if (!Object.keys(next).length) return;
+        prefs = Object.assign({}, prefs, next);
+        savePrefs();
+        pickedOnPage = true;
+        updateBanner();
+    }
+    let pickedOnPage = false;
 
     // ------------------------------------------------------------ travel page banner
     // On the Travel Agency, a one-line summary at the top; tap it for details.
@@ -508,10 +573,11 @@
             const data = await loadData(key, false);
             const trip = tripSeconds(prefs);
             const { bad, warn } = tally(buildChecks(data, trip));
+            const where = `${prefs.dest} (${METHODS[prefs.method] || prefs.method})${pickedOnPage ? '' : ' · pick a country'}`;
             el.className = bad ? 'bad' : warn ? '' : 'ok';
             el.textContent = bad || warn
-                ? `✈️ Pre-flight: ${bad ? `${bad} problem${bad > 1 ? 's' : ''}` : ''}${bad && warn ? ', ' : ''}${warn ? `${warn} warning${warn > 1 ? 's' : ''}` : ''} for ${prefs.dest} — tap`
-                : `✈️ Pre-flight: all clear for ${prefs.dest} — tap for details`;
+                ? `✈️ Pre-flight: ${bad ? `${bad} problem${bad > 1 ? 's' : ''}` : ''}${bad && warn ? ', ' : ''}${warn ? `${warn} warning${warn > 1 ? 's' : ''}` : ''} for ${where} — tap`
+                : `✈️ Pre-flight: all clear for ${where} — tap for details`;
         } catch (e) {
             el.className = 'bad';
             el.textContent = `✈️ Pre-flight: ${e.message}`;
@@ -556,6 +622,7 @@
         injectStyles();
         mountButton();
         updateBanner();
+        document.addEventListener('click', onTravelClick, true);
         let pending = false;
         new MutationObserver(() => {
             if (pending) return;
