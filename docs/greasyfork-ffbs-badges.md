@@ -8,7 +8,7 @@ Works on **Torn PDA** and desktop userscript managers (Tampermonkey, Violentmonk
 - **Hospital & travel timers**: a countdown pill on names and a live Status column in faction and ranked-war member lists. The pill pulses in the last seconds before someone leaves hospital.
 - **Sort & filter bar** on faction and war member lists: sort by FF, BS or hospital time, show "Okay" members only, with a live `Okay n/m` counter.
 - **War pages**: finds the enemy faction automatically and shows their timers.
-- **"Don't hit" list for termed wars**: load your ranked-war opponent (or any faction by ID) in the settings and tick the members your war terms protect. They get a ✋ badge and a red row, and sink to the bottom of sorted lists. Display only; nothing is blocked.
+- **Don't-attack list**: load your ranked-war opponent, an ally or any faction by ID in the settings and tick the players to leave alone (termed-war terms, allies), or add single players. You can also protect your own faction. Protected players get a ✋ badge, listed ones a red row, they sink to the bottom of sorted lists, and their attack page shows a red warning banner. Warnings only; nothing is blocked.
 - **Teammates hidden**: no FF/BS badges on your own faction members, which also saves lookups. This can be turned off.
 - **Settings panel (⚙)** in Torn's footer button row:
   - Badge style (Classic / Solid dark / Bright), size and position
@@ -29,7 +29,7 @@ The script only displays information. It never clicks or acts in the game for yo
 
 | Data Storage | Data Sharing | Purpose of Use | Key Storage & Sharing | Key Access Level |
 |---|---|---|---|---|
-| Only locally: settings, the don't-hit list and the FF/BS cache stay in your browser | Nobody. The player IDs on the page are sent to FFScouter to look up their estimates | Competitive advantage: FF / battle-stat estimates and hospital / travel timers for choosing targets, and your war opponent's member list for the don't-hit list | Stored locally on your device. Shared with FFScouter (ffscouter.com) to fetch estimates | Public. Limited recommended (`user → battlestats`, for BS colours) |
+| Only locally: settings, the don't-attack list and the FF/BS cache stay in your browser | Nobody. The player IDs on the page are sent to FFScouter to look up their estimates | Competitive advantage: FF / battle-stat estimates and hospital / travel timers for choosing targets, and faction member lists (war opponent, allies) for the don't-attack list | Stored locally on your device. Shared with FFScouter (ffscouter.com) to fetch estimates | Public. Limited recommended (`user → battlestats`, for BS colours) |
 
 See also [FFScouter's privacy policy](https://ffscouter.com/privacy).
 

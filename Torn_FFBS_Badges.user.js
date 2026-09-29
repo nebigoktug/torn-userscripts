@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Torn FF/BS Badges
 // @namespace    https://github.com/tornffbs
-// @version      2.6.0
-// @description  FairFight + estimated battle-stat badges next to player names (via FFScouter), live hospital/travel timers, a sort/filter bar on faction and war member lists, and a "don't hit" list for war terms, with an in-page settings panel. Needs a Torn API key registered with FFScouter. Works on Torn PDA and desktop userscript managers.
+// @version      2.7.0
+// @description  FairFight + estimated battle-stat badges next to player names (via FFScouter), live hospital/travel timers, a sort/filter bar on faction and war member lists, and a don't-attack list (war terms, allies, your own faction) with an attack-page warning, with an in-page settings panel. Needs a Torn API key registered with FFScouter. Works on Torn PDA and desktop userscript managers.
 // @author       Nebigoktug
 // @license      MIT
 // @supportURL   https://github.com/nebigoktug/torn-userscripts/issues
@@ -31,13 +31,13 @@
     /* =======================================================================
      * CONFIG DEFAULTS  — user-overridable ones live in SETTINGS (⚙ panel)
      * ===================================================================== */
-    const VERSION        = '2.6.0';           // keep in sync with @version
+    const VERSION        = '2.7.0';           // keep in sync with @version
     const REPO_URL       = 'https://github.com/nebigoktug/torn-userscripts';
     const LS_KEY         = 'ffbs_api_key';    // where the key is stored locally
     const LS_SETTINGS    = 'ffbs_settings';   // where the ⚙ panel settings live
     const LS_STATS       = 'ffbs_stats_cache';// persistent FFScouter cache
     const LS_OWN_BS      = 'ffbs_own_bs';     // cached own battle-stat total
-    const LS_NOHIT       = 'ffbs_nohit';      // "don't hit" list: pid -> name
+    const LS_NOHIT       = 'ffbs_nohit';      // don't-attack list: pid -> name
     const FF_MAX         = 3;                 // Torn caps the FairFight bonus at 3
     const FF_EVEN        = 1 + 8 / 3;         // FFScouter FF of someone as strong as you
     const LS_CACHE_OWNER = 'ffbs_cache_owner';// hash of the key the caches belong to
@@ -65,6 +65,7 @@
         SORT_TOOLBAR:          true,   // sort/filter bar above faction member lists
         HIDE_OWN_FACTION:      true,   // no FF/BS badges on your own faction members
         FF_INGAME:             true,   // show FF as Torn applies it (max 3) instead of FFScouter's raw value
+        NOHIT_OWN_FACTION:     false,  // treat your own faction members as don't-attack
         DEBUG:                 false,  // verbose console logging
         // Appearance
         BADGE_STYLE: 'classic',        // classic | solid | bright
@@ -238,9 +239,10 @@
     }
 
     /* =======================================================================
-     * "DON'T HIT" LIST  (localStorage: pid -> name)
-     * Players a termed war's terms say to leave alone. Display only: they get
-     * a ✋ badge and a red row, nothing is ever blocked or clicked.
+     * DON'T-ATTACK LIST  (localStorage: pid -> name)
+     * Players you mean to leave alone (war terms, allies), plus optionally
+     * your own faction. Display only: a ✋ badge, a red row for listed
+     * players and a warning on their attack page. Nothing is blocked or clicked.
      * ===================================================================== */
     let noHit = new Map();
     function loadNoHit() {
@@ -254,12 +256,48 @@
         noHit.forEach((name, pid) => { obj[pid] = name; });
         try { localStorage.setItem(LS_NOHIT, JSON.stringify(obj)); } catch (e) {}
     }
+    function isOwnProtected(pid) {
+        return !!S.NOHIT_OWN_FACTION && ownFactionMembers.has(pid);
+    }
+    function isProtected(pid) {
+        return noHit.has(pid) || isOwnProtected(pid);
+    }
     function refreshNoHit(pids) {
         document.querySelectorAll(`a[${BADGE_ATTR}]`).forEach((link) => {
             const pid = link.getAttribute(BADGE_ATTR);
             if (pid && (!pids || pids.has(pid))) applyNoHit(link, pid);
         });
         applyListSort();
+        checkAttackPage();
+    }
+    // Attack page (loader.php?sid=attack&user2ID=…) of a don't-attack player:
+    // a red banner at the top. It only warns; Torn's buttons are left alone.
+    let attackWarnDismissed = null; // pid whose banner was closed on this page
+    function checkAttackPage() {
+        let pid = null;
+        if (/\/loader\.php$/i.test(location.pathname) && /[?&]sid=attack\b/i.test(location.search)) {
+            const m = location.search.match(/[?&]user2ID=(\d+)/i);
+            if (m) pid = m[1];
+        }
+        let el = document.getElementById('ffbs-attack-warn');
+        if (!pid || !isProtected(pid) || attackWarnDismissed === pid) { if (el) el.remove(); return; }
+        const name = noHit.get(pid) || '';
+        const why = noHit.has(pid) ? 'is on your don\'t-attack list' : 'is in your faction';
+        const text = `✋ ${name || 'This player'} [${pid}] ${why}.`;
+        if (el && el.getAttribute('data-pid') === pid && el.querySelector('span').textContent === text) return;
+        if (!el) {
+            el = document.createElement('div');
+            el.id = 'ffbs-attack-warn';
+            el.setAttribute('role', 'alert');
+            el.innerHTML = '<span></span><button type="button" title="Dismiss">&times;</button>';
+            el.querySelector('button').addEventListener('click', () => {
+                attackWarnDismissed = el.getAttribute('data-pid');
+                el.remove();
+            });
+            (document.body || document.documentElement).appendChild(el);
+        }
+        el.setAttribute('data-pid', pid);
+        el.querySelector('span').textContent = text;
     }
 
     /* =======================================================================
@@ -560,6 +598,16 @@
             bottom: -7px; left: -7px; font-size: 11px; padding: 0; min-width: 0;
             text-shadow: none; filter: drop-shadow(0 0 1px #000);
         }
+        #ffbs-attack-warn {
+            position: fixed; top: 8px; left: 50%; transform: translateX(-50%); z-index: 2147483645;
+            width: max-content; max-width: 92vw; box-sizing: border-box;
+            display: flex; align-items: center; gap: 10px; padding: 10px 12px 10px 14px;
+            background: #b3261e; color: #fff; border: 2px solid #ff4136; border-radius: 8px;
+            font: 700 14px/1.3 Arial, Helvetica, sans-serif; box-shadow: 0 4px 16px rgba(0,0,0,0.5);
+            animation: ffbs-pulse 1.2s ease-in-out 3;
+        }
+        #ffbs-attack-warn button { background: none; border: 0; color: #fff; font-size: 20px;
+            line-height: 1; padding: 0 2px; cursor: pointer; }
         [data-ffbs-nohit] { background-color: rgba(255,65,54,0.18) !important;
             box-shadow: inset 3px 0 0 #ff4136 !important; }
         .ffbs-timer-hosp   { border-color: #ff4136; background-color: rgba(255,65,54,0.6); }
@@ -925,6 +973,7 @@
         ownFactionMembers.forEach((pid) => { if (!next.has(pid)) changed.add(pid); });
         ownFactionMembers = next;
         if (changed.size) applyAllResolved(changed); // show/hide their FF/BS badges
+        checkAttackPage();
     }
 
     /* =======================================================================
@@ -1118,7 +1167,7 @@
             return;
         }
         const data = statsCache.get(pid);
-        if (!data) return;
+        if (!data) { applyNoHit(link, pid); return; }
         const ffKnown = data.ff != null && !isNaN(data.ff);
         const bsKnown = data.bsRaw != null && !isNaN(data.bsRaw);
         link.querySelectorAll('.ffbs-badge:not(.ffbs-timer)').forEach((b) => b.remove());
@@ -1144,20 +1193,21 @@
         applyTimerBadge(link, pid);
         applyNoHit(link, pid);
     }
-    // ✋ badge on the link, red tint on its faction / war list row.
+    // ✋ badge on the link; listed players also get a red tint on their
+    // faction / war list row (teammates don't, or your own list would be all red).
     function applyNoHit(link, pid) {
-        const on = noHit.has(pid);
+        const on = isProtected(pid);
         let b = link.querySelector('.ffbs-nohit');
         if (on && !b) {
             b = document.createElement('span');
             b.className = 'ffbs-badge ffbs-nohit';
             b.textContent = '✋';
-            b.title = "Don't hit (war terms)";
             link.appendChild(b);
         } else if (!on && b) b.remove();
+        if (b && on) b.title = noHit.has(pid) ? "Don't attack (on your list)" : "Don't attack (your faction)";
         const row = link.closest('.faction-war .members-list > li, .table-row');
         if (row) {
-            if (on) { if (!row.hasAttribute('data-ffbs-nohit')) row.setAttribute('data-ffbs-nohit', ''); }
+            if (noHit.has(pid)) { if (!row.hasAttribute('data-ffbs-nohit')) row.setAttribute('data-ffbs-nohit', ''); }
             else if (row.hasAttribute('data-ffbs-nohit')) row.removeAttribute('data-ffbs-nohit');
         }
     }
@@ -1390,7 +1440,7 @@
 
             const items = rows.map((row, i) => {
                 const pid = rowPid(row);
-                return { row: row, i: i, st: factionStatus.get(pid), stats: statsCache.get(pid), noHit: noHit.has(pid) };
+                return { row: row, i: i, st: factionStatus.get(pid), stats: statsCache.get(pid), noHit: isProtected(pid) };
             });
 
             let okay = 0;
@@ -1436,7 +1486,7 @@
             if (!cmp) return;
 
             container.setAttribute('data-ffbs-sorted', '1');
-            // "Don't hit" players always sink to the bottom of a sorted list.
+            // Don't-attack players always sink to the bottom of a sorted list.
             items.slice().sort((a, b) => (a.noHit - b.noHit) || cmp(a, b) || a.i - b.i).forEach((it, idx) => {
                 const o = String(idx);
                 if (it.row.getAttribute('data-ffbs-order') !== o) {
@@ -1468,6 +1518,7 @@
         if (pending.size > 0) scheduleFetch();
         applyListSort();
         showGearButton();
+        checkAttackPage();
     }
     function scheduleScan() {
         if (scanDebounce) return;
@@ -1475,7 +1526,7 @@
     }
     // Our own UI nodes; mutations that only add these are ignored so badge
     // updates can't trigger a rescan loop.
-    const OWN_NODES = '.ffbs-badge, .ffbs-toolbar, #ffbs-setup, #ffbs-config, #ffbs-gear, [data-ffbs-gear], #ffbs-reopen, #ffbs-styles';
+    const OWN_NODES = '.ffbs-badge, .ffbs-toolbar, #ffbs-setup, #ffbs-config, #ffbs-gear, [data-ffbs-gear], #ffbs-reopen, #ffbs-styles, #ffbs-attack-warn';
     function startObserver() {
         if (observer || typeof MutationObserver !== 'function') return;
         observer = new MutationObserver((mutations) => {
@@ -1516,9 +1567,9 @@
     }
     // Torn API ToS: how the key is used must be shown where the key is entered.
     const TOS_ROWS = [
-        ['Data storage', 'Only locally: settings, the don\'t-hit list and the FF/BS cache stay in this browser.'],
+        ['Data storage', 'Only locally: settings, the don\'t-attack list and the FF/BS cache stay in this browser.'],
         ['Data sharing', 'Nobody. The player IDs on the page are sent to FFScouter to look up their estimates.'],
-        ['Purpose of use', 'Competitive advantage: FF / battle-stat estimates and hospital / travel timers for choosing targets, and your war opponent\'s member list for the don\'t-hit list.'],
+        ['Purpose of use', 'Competitive advantage: FF / battle-stat estimates and hospital / travel timers for choosing targets, and faction member lists (war opponent, allies) for the don\'t-attack list.'],
         ['Key storage & sharing', 'Stored locally on this device. Shared with FFScouter (ffscouter.com) to fetch estimates.'],
         ['Key access level', 'Public. Limited is recommended (user → battlestats, used to colour BS badges).'],
     ];
@@ -1739,14 +1790,16 @@
                     ${toggleRow('HIDE_WHEN_NO_DATA', 'Hide empty badges', 'Draw nothing when FF & BS unknown')}
                     ${numRow('HOSP_ALERT_SEC', 'Hospital alert (sec)', 'Pulse when this little time is left (0 = off)', '10')}
                 `)}
-                ${section("War terms: don't hit", `
-                    <p class="ffbs-note">Players your war's terms say to leave alone get a ✋ badge, a red row and
-                        sink to the bottom of sorted lists. Display only: nothing is blocked. Changes save instantly.</p>
+                ${section("Don't-attack list", `
+                    <p class="ffbs-note">Players you mean to leave alone (war terms, allies) get a ✋ badge, a red row,
+                        sink to the bottom of sorted lists and show a warning on their attack page.
+                        Warnings only: nothing is blocked. List changes save instantly.</p>
+                    ${toggleRow('NOHIT_OWN_FACTION', 'Protect my faction', '✋ and attack-page warning on teammates (saved with Save)')}
                     <div class="ffbs-nh-actions">
                         <button type="button" class="ffbs-btn" id="cfg-nh-war">Load war opponent</button>
                     </div>
                     <div class="ffbs-row">
-                        <label for="cfg-nh-id">Faction or player ID<span class="hint">If the war isn't found, load a faction by ID</span></label>
+                        <label for="cfg-nh-id">Faction or player ID<span class="hint">Load a faction (e.g. an ally) or add one player</span></label>
                         <input type="number" id="cfg-nh-id" min="1" step="1" />
                     </div>
                     <div class="ffbs-nh-actions">
@@ -1866,7 +1919,7 @@
             }
             const others = Array.from(noHit.keys()).filter((pid) => !shown.has(pid));
             if (others.length) {
-                html += `<div class="ffbs-nh-head"><span>${loaded ? 'Other marked players' : "Don't hit"} · ${others.length}</span></div>`;
+                html += `<div class="ffbs-nh-head"><span>${loaded ? 'Other listed players' : 'Your list'} · ${others.length}</span></div>`;
                 others.forEach((pid) => { html += item(pid, noHit.get(pid)); });
             }
             nhList.innerHTML = html;
@@ -1905,7 +1958,7 @@
                 .sort((a, b) => (Number(b.level) || 0) - (Number(a.level) || 0));
             loaded = { name: name || `Faction ${fid}`, members: members };
             renderNh();
-            return `Loaded ${members.length} members. Tick the ones your terms protect.`;
+            return `Loaded ${members.length} members. Tick the ones to leave alone.`;
         };
         $('cfg-nh-war').addEventListener('click', () => run('Looking up your war…', async () => {
             const me = await tornApi('user/faction');
@@ -1958,7 +2011,7 @@
         // settings, or an error string if the thresholds are out of order.
         const collect = () => {
             const next = Object.assign({}, S);
-            const boolKeys = ['SHOW_NAME_TIMER_BADGE', 'ENHANCE_STATUS_CELL', 'SKIP_CHAT', 'HIDE_WHEN_NO_DATA', 'SORT_TOOLBAR', 'HIDE_OWN_FACTION', 'FF_INGAME', 'DEBUG'];
+            const boolKeys = ['SHOW_NAME_TIMER_BADGE', 'ENHANCE_STATUS_CELL', 'SKIP_CHAT', 'HIDE_WHEN_NO_DATA', 'SORT_TOOLBAR', 'HIDE_OWN_FACTION', 'FF_INGAME', 'NOHIT_OWN_FACTION', 'DEBUG'];
             const numKeys  = ['FF_GREEN', 'FF_YELLOW', 'FF_ORANGE', 'BS_YELLOW', 'BS_ORANGE', 'CACHE_HOURS', 'HOSP_ALERT_SEC'];
             const selKeys  = ['BADGE_STYLE', 'BADGE_SIZE', 'BADGE_PLACEMENT', 'THEME'];
             boolKeys.forEach((k) => { const el = $(`cfg-${k}`); if (el) next[k] = el.checked; });
