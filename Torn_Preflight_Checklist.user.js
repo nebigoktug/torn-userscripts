@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Pre-flight Checklist
 // @namespace    https://github.com/nebigoktug
-// @version      1.1.0
+// @version      1.1.1
 // @description  Before you fly: will your energy or nerve cap while you're away, will a drug / booster cooldown run out mid-flight, is your cash right for the trip, and is there a ranked war, chain or Organized Crime you'd miss. Checks against the real round-trip time for the destination and flight type you pick on the Travel Agency. Display only, no automation.
 // @author       Nebigoktug
 // @license      MIT
@@ -33,7 +33,7 @@
     // Torn PDA may inject on any URL containing "torn"; only run on the game.
     if (!/^(www\.)?torn\.com$/i.test(location.hostname)) return;
 
-    const VERSION  = '1.1.0';
+    const VERSION  = '1.1.1';
     const REPO_URL = 'https://github.com/nebigoktug/torn-userscripts';
     const LS_KEY   = 'tpc_api_key';
     const LS_PREFS = 'tpc_prefs';
@@ -168,6 +168,12 @@
         if (!prefs.method) prefs.method = 'Standard';
         savePrefs();
         return cache;
+    }
+
+    // Seconds until you land, if you're in the air right now (0 otherwise).
+    function inFlight(data) {
+        const t = data && data.user && data.user.travel;
+        return t && Number(t.time_left) > 0 ? Number(t.time_left) : 0;
     }
 
     // ------------------------------------------------------------ checks
@@ -310,6 +316,9 @@
             background: var(--tpc-bg); color: var(--tpc-fg); border: 2px solid var(--tpc-warn);
             box-shadow: 0 6px 20px var(--tpc-shadow);
         }
+        /* In the page, under Torn's title: doesn't cover the bars. */
+        #tpc-banner.tpc-inline { position: static; transform: none; display: block; max-width: 100%;
+            margin: 0 0 10px; border-radius: 10px; white-space: normal; box-shadow: none; }
         #tpc-banner.bad { border-color: var(--tpc-bad); }
         #tpc-banner.ok  { border-color: var(--tpc-ok); }
         #tpc-overlay {
@@ -341,6 +350,8 @@
             background: var(--tpc-bg2); color: var(--tpc-fg); border: 1px solid var(--tpc-border);
         }
         #tpc-overlay .tpc-trip { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 8px; margin-bottom: 8px; }
+        #tpc-overlay .tpc-trip > * { min-width: 0; }
+        #tpc-overlay .tpc-trip select, #tpc-overlay .tpc-trip input[type="number"] { width: 100%; }
         #tpc-overlay .tpc-trip label { display: flex; flex-direction: column; gap: 3px; font-size: 11px;
             font-weight: 700; color: var(--tpc-muted) !important; text-transform: uppercase; letter-spacing: .3px; }
         #tpc-overlay .tpc-trip label.inline { flex-direction: row; align-items: center; gap: 6px; text-transform: none; font-size: 13px; }
@@ -492,7 +503,10 @@
             const checks = buildChecks(data, trip);
             const { bad, warn } = tally(checks);
             const d = destOf(prefs.dest);
+            const flying = inFlight(data);
             out.innerHTML = `
+                ${flying ? `<div class="tpc-msg" style="margin-bottom:10px">You're in the air (${esc(data.user.travel.destination || '')}, lands in ${dur(flying)}).
+                    This checklist is for your next flight from Torn.</div>` : ''}
                 <div class="tpc-sum">
                     <span>${esc(d.name)}: ${dur(trip.oneWay)} each way · <b>back in ${dur(trip.total)}</b></span>
                     <b style="color:var(--tpc-${bad ? 'bad' : warn ? 'warn' : 'ok'}) !important">${bad ? `${bad} ✗` : ''} ${warn ? `${warn} !` : ''}${!bad && !warn ? 'All clear' : ''}</b>
@@ -553,6 +567,7 @@
         updateBanner();
     }
     let pickedOnPage = false;
+    let bannerHidden = false;    // removed because you're flying; don't re-add it
 
     // ------------------------------------------------------------ travel page banner
     // On the Travel Agency, a one-line summary at the top; tap it for details.
@@ -566,20 +581,31 @@
             el = document.createElement('div');
             el.id = 'tpc-banner';
             el.addEventListener('click', openPanel);
-            (document.body || document.documentElement).appendChild(el);
+            // Right under Torn's page title if there is one, else floating.
+            const title = document.querySelector('.content-title');
+            if (title && title.parentNode) {
+                el.classList.add('tpc-inline');
+                title.parentNode.insertBefore(el, title.nextSibling);
+            } else {
+                (document.body || document.documentElement).appendChild(el);
+            }
         }
-        if (!key) { el.className = ''; el.textContent = '✈️ Pre-flight checklist: tap to set up'; return; }
+        const inline = el.classList.contains('tpc-inline');
+        const cls = (c) => { el.className = (inline ? 'tpc-inline ' : '') + c; };
+        if (!key) { cls(''); el.textContent = '✈️ Pre-flight checklist: tap to set up'; return; }
         try {
             const data = await loadData(key, false);
+            // In the air: nothing to check before this flight any more.
+            if (inFlight(data)) { el.remove(); bannerHidden = true; return; }
             const trip = tripSeconds(prefs);
             const { bad, warn } = tally(buildChecks(data, trip));
             const where = `${prefs.dest} (${METHODS[prefs.method] || prefs.method})${pickedOnPage ? '' : ' · pick a country'}`;
-            el.className = bad ? 'bad' : warn ? '' : 'ok';
+            cls(bad ? 'bad' : warn ? '' : 'ok');
             el.textContent = bad || warn
                 ? `✈️ Pre-flight: ${bad ? `${bad} problem${bad > 1 ? 's' : ''}` : ''}${bad && warn ? ', ' : ''}${warn ? `${warn} warning${warn > 1 ? 's' : ''}` : ''} for ${where} — tap`
                 : `✈️ Pre-flight: all clear for ${where} — tap for details`;
         } catch (e) {
-            el.className = 'bad';
+            cls('bad');
             el.textContent = `✈️ Pre-flight: ${e.message}`;
         }
     }
@@ -632,7 +658,7 @@
                 const ref = document.getElementById('notes_panel_button') || document.getElementById('people_panel_button');
                 const ok = ref ? !!document.querySelector('[data-tpc-btn]') : !!document.getElementById('tpc-float');
                 if (!ok) mountButton();
-                if (onTravelPage() && !document.getElementById('tpc-banner')) updateBanner();
+                if (onTravelPage() && !bannerHidden && !document.getElementById('tpc-banner')) updateBanner();
             }, 300);
         }).observe(document.body, { childList: true, subtree: true });
     }
