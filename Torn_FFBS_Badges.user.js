@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Torn FF/BS Badges
 // @namespace    https://github.com/tornffbs
-// @version      2.5.2
-// @description  FairFight + estimated battle-stat badges next to player names (via FFScouter), live hospital/travel timers and a sort/filter bar on faction and war member lists, with an in-page settings panel. Needs a Torn API key registered with FFScouter. Works on Torn PDA and desktop userscript managers.
+// @version      2.6.0
+// @description  FairFight + estimated battle-stat badges next to player names (via FFScouter), live hospital/travel timers, a sort/filter bar on faction and war member lists, and a "don't hit" list for war terms, with an in-page settings panel. Needs a Torn API key registered with FFScouter. Works on Torn PDA and desktop userscript managers.
 // @author       Nebigoktug
 // @license      MIT
 // @supportURL   https://github.com/nebigoktug/torn-userscripts/issues
@@ -31,12 +31,15 @@
     /* =======================================================================
      * CONFIG DEFAULTS  — user-overridable ones live in SETTINGS (⚙ panel)
      * ===================================================================== */
-    const VERSION        = '2.5.2';           // keep in sync with @version
+    const VERSION        = '2.6.0';           // keep in sync with @version
     const REPO_URL       = 'https://github.com/nebigoktug/torn-userscripts';
     const LS_KEY         = 'ffbs_api_key';    // where the key is stored locally
     const LS_SETTINGS    = 'ffbs_settings';   // where the ⚙ panel settings live
     const LS_STATS       = 'ffbs_stats_cache';// persistent FFScouter cache
     const LS_OWN_BS      = 'ffbs_own_bs';     // cached own battle-stat total
+    const LS_NOHIT       = 'ffbs_nohit';      // "don't hit" list: pid -> name
+    const FF_MAX         = 3;                 // Torn caps the FairFight bonus at 3
+    const FF_EVEN        = 1 + 8 / 3;         // FFScouter FF of someone as strong as you
     const LS_CACHE_OWNER = 'ffbs_cache_owner';// hash of the key the caches belong to
     const FALLBACK_SCAN_INTERVAL = 10000;     // safety re-scan; MutationObserver does the real work
     const SCAN_DEBOUNCE_MS = 250;             // coalesce bursts of DOM mutations
@@ -61,6 +64,7 @@
         HIDE_WHEN_NO_DATA:     true,   // draw nothing (not "?") when FF & BS unknown
         SORT_TOOLBAR:          true,   // sort/filter bar above faction member lists
         HIDE_OWN_FACTION:      true,   // no FF/BS badges on your own faction members
+        FF_INGAME:             true,   // show FF as Torn applies it (max 3) instead of FFScouter's raw value
         DEBUG:                 false,  // verbose console logging
         // Appearance
         BADGE_STYLE: 'classic',        // classic | solid | bright
@@ -234,6 +238,31 @@
     }
 
     /* =======================================================================
+     * "DON'T HIT" LIST  (localStorage: pid -> name)
+     * Players a termed war's terms say to leave alone. Display only: they get
+     * a ✋ badge and a red row, nothing is ever blocked or clicked.
+     * ===================================================================== */
+    let noHit = new Map();
+    function loadNoHit() {
+        try {
+            const obj = JSON.parse(localStorage.getItem(LS_NOHIT) || '{}');
+            noHit = new Map(Object.keys(obj).map((pid) => [pid, String(obj[pid] || '')]));
+        } catch (e) { noHit = new Map(); }
+    }
+    function saveNoHit() {
+        const obj = {};
+        noHit.forEach((name, pid) => { obj[pid] = name; });
+        try { localStorage.setItem(LS_NOHIT, JSON.stringify(obj)); } catch (e) {}
+    }
+    function refreshNoHit(pids) {
+        document.querySelectorAll(`a[${BADGE_ATTR}]`).forEach((link) => {
+            const pid = link.getAttribute(BADGE_ATTR);
+            if (pid && (!pids || pids.has(pid))) applyNoHit(link, pid);
+        });
+        applyListSort();
+    }
+
+    /* =======================================================================
      * HTTP LAYER  (Torn PDA + desktop Tampermonkey)
      * ===================================================================== */
     function httpGet(url) {
@@ -325,6 +354,20 @@
     function formatFF(ff) {
         if (ff == null || isNaN(ff)) return '?';
         return Number(ff).toFixed(1).replace(/\.0$/, '');
+    }
+    // FF as drawn on the badge. FFScouter's value has no ceiling (a much
+    // stronger player can show 200+), but Torn never pays more than 3x, so by
+    // default anything above 3 reads "3", with an arrow when FFScouter rates
+    // the player stronger than you.
+    function badgeFF(ff) {
+        if (ff == null || isNaN(ff) || !S.FF_INGAME || ff <= FF_MAX) return formatFF(ff);
+        return ff > FF_EVEN ? '3↑' : '3';
+    }
+    function ffTitle(ff) {
+        if (ff == null || isNaN(ff)) return 'FairFight: unknown';
+        if (ff <= FF_MAX) return `FairFight: ${formatFF(ff)}`;
+        return `FairFight: 3 (max in Torn; FFScouter ${formatFF(ff)})` +
+            (ff > FF_EVEN ? ' · estimated stronger than you' : '');
     }
     function formatBS(bsHuman, bsRaw) {
         if (bsHuman) return String(bsHuman).replace(/\.0(?=[a-zA-Z])/g, '').replace(/\.0$/, '');
@@ -513,6 +556,12 @@
             top: -7px; left: -7px; border-radius: 7px; border: 1.5px solid;
             padding: 1px 4px; font-size: 8px; white-space: nowrap;
         }
+        .ffbs-nohit {
+            bottom: -7px; left: -7px; font-size: 11px; padding: 0; min-width: 0;
+            text-shadow: none; filter: drop-shadow(0 0 1px #000);
+        }
+        [data-ffbs-nohit] { background-color: rgba(255,65,54,0.18) !important;
+            box-shadow: inset 3px 0 0 #ff4136 !important; }
         .ffbs-timer-hosp   { border-color: #ff4136; background-color: rgba(255,65,54,0.6); }
         .ffbs-timer-travel { border-color: #39a0ff; background-color: rgba(57,160,255,0.6); }
 
@@ -649,6 +698,7 @@
             background: var(--ffbs-bg2); color: var(--ffbs-fg); border: 1px solid var(--ffbs-border); border-radius: 6px;
         }
         #ffbs-config input[type="number"] { width: 72px; text-align: right; }
+        #ffbs-config input#cfg-nh-id { width: 104px; }
         #ffbs-config select { min-width: 104px; }
         #ffbs-config input[type="checkbox"] { width: 18px; height: 18px; accent-color: var(--ffbs-accent); cursor: pointer; }
 
@@ -668,6 +718,16 @@
         }
         #ffbs-config .ffbs-btn:hover { background: var(--ffbs-hover); }
         #ffbs-config .ffbs-btn.danger { color: #e5534b; }
+        #ffbs-config .ffbs-nh-actions { display: flex; gap: 6px; flex-wrap: wrap; margin: 4px 0 6px; }
+        #ffbs-config .ffbs-nh-list { max-height: 260px; overflow-y: auto; margin: 4px 0 8px;
+            border: 1px solid var(--ffbs-border); border-radius: 6px; }
+        #ffbs-config .ffbs-nh-list:empty { display: none; }
+        #ffbs-config .ffbs-nh-head { display: flex; justify-content: space-between; align-items: center; gap: 6px;
+            padding: 6px 8px; font-size: 12px; font-weight: 700; background: var(--ffbs-bg2); }
+        #ffbs-config .ffbs-nh-head button { font-size: 11px; padding: 2px 6px; }
+        #ffbs-config .ffbs-nh-item { display: flex; align-items: center; gap: 8px; padding: 5px 8px;
+            font-size: 12px; border-top: 1px solid var(--ffbs-border); cursor: pointer; }
+        #ffbs-config .ffbs-nh-item .lvl { margin-left: auto; color: var(--ffbs-muted); font-size: 11px; }
         #ffbs-config .ffbs-btn.armed { background: #e5534b; color: #fff; border-color: #e5534b; }
 
         #ffbs-config .ffbs-foot { padding: 12px 14px 14px; border-top: 1px solid var(--ffbs-border); }
@@ -782,6 +842,20 @@
     }
     function factionKey() {
         return factionTargets().map((f) => f || 'own').join(',');
+    }
+    // One Torn API v2 call for the settings panel. Resolves to the parsed JSON
+    // or rejects with a message that can be shown to the user.
+    async function tornApi(path) {
+        if (!API_KEY) throw new Error('No API key set.');
+        if (Date.now() < tornPausedUntil) throw new Error('Torn API is busy, try again in a few seconds.');
+        const resp = await httpGet(`https://api.torn.com/v2/${path}${path.includes('?') ? '&' : '?'}key=${encodeURIComponent(API_KEY)}`);
+        const cat = classify(resp.status, resp.text);
+        if (cat === 'auth') { clearKeyAndReopenSetup(); throw new Error('API key rejected.'); }
+        if (handleTornBackoff(cat) || cat !== 'ok') throw new Error('Torn API unavailable, try again shortly.');
+        let data;
+        try { data = JSON.parse(resp.text); } catch (e) { throw new Error('Bad answer from the Torn API.'); }
+        if (data.error) throw new Error(`Torn API error ${data.error.code}: ${data.error.error || ''}`.trim());
+        return data;
     }
     // Fetch one faction's members. Returns an array, or null on any failure.
     async function fetchFactionMembers(fid) {
@@ -1040,6 +1114,7 @@
             link.setAttribute(BADGE_ATTR, pid);
             markPlacement(link);
             applyTimerBadge(link, pid);
+            applyNoHit(link, pid);
             return;
         }
         const data = statsCache.get(pid);
@@ -1052,12 +1127,13 @@
         markPlacement(link);
         if (S.HIDE_WHEN_NO_DATA && !ffKnown && !bsKnown) {
             applyTimerBadge(link, pid);
+            applyNoHit(link, pid);
             return;
         }
         const ff = document.createElement('span');
         ff.className = `ffbs-badge ffbs-ff ${ffTier(data.ff)}`;
-        ff.textContent = formatFF(data.ff);
-        ff.title = `FairFight: ${formatFF(data.ff)}`;
+        ff.textContent = badgeFF(data.ff);
+        ff.title = ffTitle(data.ff);
         link.appendChild(ff);
         const bs = document.createElement('span');
         bs.className = `ffbs-badge ffbs-bs ${bsTier(data.bsRaw)}`;
@@ -1066,6 +1142,24 @@
         if (bsKnown) bs.setAttribute('data-bsraw', String(data.bsRaw));
         link.appendChild(bs);
         applyTimerBadge(link, pid);
+        applyNoHit(link, pid);
+    }
+    // ✋ badge on the link, red tint on its faction / war list row.
+    function applyNoHit(link, pid) {
+        const on = noHit.has(pid);
+        let b = link.querySelector('.ffbs-nohit');
+        if (on && !b) {
+            b = document.createElement('span');
+            b.className = 'ffbs-badge ffbs-nohit';
+            b.textContent = '✋';
+            b.title = "Don't hit (war terms)";
+            link.appendChild(b);
+        } else if (!on && b) b.remove();
+        const row = link.closest('.faction-war .members-list > li, .table-row');
+        if (row) {
+            if (on) { if (!row.hasAttribute('data-ffbs-nohit')) row.setAttribute('data-ffbs-nohit', ''); }
+            else if (row.hasAttribute('data-ffbs-nohit')) row.removeAttribute('data-ffbs-nohit');
+        }
     }
     function recolorBS() {
         document.querySelectorAll('.ffbs-bs[data-bsraw]').forEach((b) => {
@@ -1296,7 +1390,7 @@
 
             const items = rows.map((row, i) => {
                 const pid = rowPid(row);
-                return { row: row, i: i, st: factionStatus.get(pid), stats: statsCache.get(pid) };
+                return { row: row, i: i, st: factionStatus.get(pid), stats: statsCache.get(pid), noHit: noHit.has(pid) };
             });
 
             let okay = 0;
@@ -1322,11 +1416,13 @@
 
             const num = (v) => (v == null || isNaN(v) ? null : Number(v));
             const cmp = {
-                // Highest FF first; unknown last.
+                // Highest FF first; unknown last. With in-game FF on, everyone
+                // above 3 ties at 3 and the weakest of them comes first.
                 ff: (a, b) => {
                     const x = num(a.stats && a.stats.ff), y = num(b.stats && b.stats.ff);
                     if (x == null || y == null) return (x == null) - (y == null);
-                    return y - x;
+                    if (!S.FF_INGAME) return y - x;
+                    return (Math.min(y, FF_MAX) - Math.min(x, FF_MAX)) || (x - y);
                 },
                 // Weakest estimated BS first; unknown last.
                 bs: (a, b) => {
@@ -1340,7 +1436,8 @@
             if (!cmp) return;
 
             container.setAttribute('data-ffbs-sorted', '1');
-            items.slice().sort((a, b) => cmp(a, b) || a.i - b.i).forEach((it, idx) => {
+            // "Don't hit" players always sink to the bottom of a sorted list.
+            items.slice().sort((a, b) => (a.noHit - b.noHit) || cmp(a, b) || a.i - b.i).forEach((it, idx) => {
                 const o = String(idx);
                 if (it.row.getAttribute('data-ffbs-order') !== o) {
                     it.row.style.order = o;
@@ -1419,9 +1516,9 @@
     }
     // Torn API ToS: how the key is used must be shown where the key is entered.
     const TOS_ROWS = [
-        ['Data storage', 'Only locally: settings and the FF/BS cache stay in this browser.'],
+        ['Data storage', 'Only locally: settings, the don\'t-hit list and the FF/BS cache stay in this browser.'],
         ['Data sharing', 'Nobody. The player IDs on the page are sent to FFScouter to look up their estimates.'],
-        ['Purpose of use', 'Competitive advantage: FF / battle-stat estimates and hospital / travel timers for choosing targets.'],
+        ['Purpose of use', 'Competitive advantage: FF / battle-stat estimates and hospital / travel timers for choosing targets, and your war opponent\'s member list for the don\'t-hit list.'],
         ['Key storage & sharing', 'Stored locally on this device. Shared with FFScouter (ffscouter.com) to fetch estimates.'],
         ['Key access level', 'Public. Limited is recommended (user → battlestats, used to colour BS badges).'],
     ];
@@ -1637,9 +1734,28 @@
                     ${toggleRow('ENHANCE_STATUS_CELL', 'Live status column', 'Timers in faction & war member lists')}
                     ${toggleRow('SORT_TOOLBAR', 'Member list sort bar', 'Sort by FF / BS / hospital, filter Okay')}
                     ${toggleRow('HIDE_OWN_FACTION', 'Hide badges on my faction', 'No FF/BS on teammates (timers stay)')}
+                    ${toggleRow('FF_INGAME', 'In-game FF (max 3)', 'Torn caps FF at 3; 3↑ = rated stronger than you')}
                     ${toggleRow('SKIP_CHAT', 'Skip chat box', "Don't badge names inside chat")}
                     ${toggleRow('HIDE_WHEN_NO_DATA', 'Hide empty badges', 'Draw nothing when FF & BS unknown')}
                     ${numRow('HOSP_ALERT_SEC', 'Hospital alert (sec)', 'Pulse when this little time is left (0 = off)', '10')}
+                `)}
+                ${section("War terms: don't hit", `
+                    <p class="ffbs-note">Players your war's terms say to leave alone get a ✋ badge, a red row and
+                        sink to the bottom of sorted lists. Display only: nothing is blocked. Changes save instantly.</p>
+                    <div class="ffbs-nh-actions">
+                        <button type="button" class="ffbs-btn" id="cfg-nh-war">Load war opponent</button>
+                    </div>
+                    <div class="ffbs-row">
+                        <label for="cfg-nh-id">Faction or player ID<span class="hint">If the war isn't found, load a faction by ID</span></label>
+                        <input type="number" id="cfg-nh-id" min="1" step="1" />
+                    </div>
+                    <div class="ffbs-nh-actions">
+                        <button type="button" class="ffbs-btn" id="cfg-nh-fac">Load faction</button>
+                        <button type="button" class="ffbs-btn" id="cfg-nh-add">Add player</button>
+                    </div>
+                    <p class="ffbs-note" id="cfg-nh-msg"></p>
+                    <div class="ffbs-nh-list" id="cfg-nh-list"></div>
+                    <button type="button" class="ffbs-btn danger" id="cfg-nh-clear">Clear list</button>
                 `)}
                 ${section('Colour thresholds', `
                     <p class="ffbs-note">FairFight</p>
@@ -1684,21 +1800,24 @@
         const renderPreview = () => {
             const g = num('cfg-FF_GREEN', S.FF_GREEN), y = num('cfg-FF_YELLOW', S.FF_YELLOW), o = num('cfg-FF_ORANGE', S.FF_ORANGE);
             const ffT = (ff) => ff < g ? 'ffbs-green' : ff < y ? 'ffbs-yellow' : ff < o ? 'ffbs-orange' : 'ffbs-red';
+            const capped = ($('cfg-FF_INGAME') || {}).checked;
+            const ffTxt = (ff) => (!capped || ff <= FF_MAX) ? formatFF(ff) : (ff > FF_EVEN ? '3↑' : '3');
             const samples = [
                 { ff: 1.2, bs: 'ffbs-green',  bsTxt: '850k' },
                 { ff: 2.1, bs: 'ffbs-yellow', bsTxt: '1.1m' },
                 { ff: 2.7, bs: 'ffbs-orange', bsTxt: '1.3m' },
-                { ff: 3.4, bs: 'ffbs-red',    bsTxt: '4.2m' },
+                { ff: 3.4, bs: 'ffbs-orange', bsTxt: '1.4m' },
+                { ff: 24.8, bs: 'ffbs-red',   bsTxt: '90m' },
             ];
             const pv = $('cfg-preview');
             pv.setAttribute('data-ffbs-pstyle', $('cfg-BADGE_STYLE').value);
             pv.setAttribute('data-ffbs-psize', $('cfg-BADGE_SIZE').value);
             pv.innerHTML = samples.map((s) => `<span class="ffbs-pv">Player
-                <span class="ffbs-badge ffbs-ff ${ffT(s.ff)}">${formatFF(s.ff)}</span>
+                <span class="ffbs-badge ffbs-ff ${ffT(s.ff)}">${ffTxt(s.ff)}</span>
                 <span class="ffbs-badge ffbs-bs ${s.bs}">${s.bsTxt}</span></span>`).join('');
         };
         renderPreview();
-        overlay.querySelectorAll('select, input[type="number"]').forEach((el) => {
+        overlay.querySelectorAll('select, input[type="number"], #cfg-FF_INGAME').forEach((el) => {
             el.addEventListener('input', renderPreview);
             el.addEventListener('change', renderPreview);
         });
@@ -1721,11 +1840,125 @@
             toast('Cache cleared');
         });
 
+        // ---- "don't hit" list ----
+        const nhMsg = $('cfg-nh-msg'), nhList = $('cfg-nh-list');
+        const esc = (t) => String(t).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+        let loaded = null; // { name, members: [{ id, name, level }] }
+        const setNh = (pid, name, on) => {
+            if (on) noHit.set(pid, name || noHit.get(pid) || '');
+            else noHit.delete(pid);
+            saveNoHit();
+            refreshNoHit(new Set([pid]));
+        };
+        const item = (pid, name, level) => `
+            <label class="ffbs-nh-item"><input type="checkbox" data-nh="${esc(pid)}" data-name="${esc(name || '')}"
+                ${noHit.has(pid) ? 'checked' : ''} /> ${esc(name || '#' + pid)}
+                <span class="lvl">${level ? 'Lvl ' + esc(level) : '#' + esc(pid)}</span></label>`;
+        const renderNh = () => {
+            let html = '';
+            const shown = new Set();
+            if (loaded) {
+                const marked = loaded.members.filter((m) => noHit.has(m.id)).length;
+                html += `<div class="ffbs-nh-head"><span>${esc(loaded.name)} · ${marked}/${loaded.members.length}</span>
+                    <span><button type="button" class="ffbs-btn" data-nh-all="1">All</button>
+                    <button type="button" class="ffbs-btn" data-nh-all="0">None</button></span></div>`;
+                loaded.members.forEach((m) => { shown.add(m.id); html += item(m.id, m.name, m.level); });
+            }
+            const others = Array.from(noHit.keys()).filter((pid) => !shown.has(pid));
+            if (others.length) {
+                html += `<div class="ffbs-nh-head"><span>${loaded ? 'Other marked players' : "Don't hit"} · ${others.length}</span></div>`;
+                others.forEach((pid) => { html += item(pid, noHit.get(pid)); });
+            }
+            nhList.innerHTML = html;
+        };
+        renderNh();
+        nhList.addEventListener('change', (e) => {
+            const cb = e.target.closest('input[data-nh]');
+            if (!cb) return;
+            setNh(cb.getAttribute('data-nh'), cb.getAttribute('data-name'), cb.checked);
+            if (loaded) renderNh();
+        });
+        nhList.addEventListener('click', (e) => {
+            const btn = e.target.closest('button[data-nh-all]');
+            if (!btn || !loaded) return;
+            const on = btn.getAttribute('data-nh-all') === '1';
+            loaded.members.forEach((m) => { if (on) noHit.set(m.id, m.name); else noHit.delete(m.id); });
+            saveNoHit();
+            refreshNoHit(new Set(loaded.members.map((m) => m.id)));
+            renderNh();
+        });
+        const busy = (on) => ['cfg-nh-war', 'cfg-nh-fac', 'cfg-nh-add'].forEach((id) => { $(id).disabled = on; });
+        const run = async (label, fn) => {
+            busy(true);
+            nhMsg.textContent = label;
+            try { nhMsg.textContent = (await fn()) || ''; }
+            catch (e) { nhMsg.textContent = e.message || 'Something went wrong.'; }
+            finally { busy(false); }
+        };
+        const loadFaction = async (fid, name) => {
+            const data = await tornApi(`faction/${fid}/members`);
+            const arr = Array.isArray(data.members) ? data.members
+                : Object.keys(data.members || {}).map((id) => Object.assign({ id: id }, data.members[id]));
+            if (!arr.length) throw new Error(`Faction ${fid} has no members (wrong ID?).`);
+            const members = arr.filter((m) => m && m.id != null)
+                .map((m) => ({ id: String(m.id), name: m.name || '', level: m.level || '' }))
+                .sort((a, b) => (Number(b.level) || 0) - (Number(a.level) || 0));
+            loaded = { name: name || `Faction ${fid}`, members: members };
+            renderNh();
+            return `Loaded ${members.length} members. Tick the ones your terms protect.`;
+        };
+        $('cfg-nh-war').addEventListener('click', () => run('Looking up your war…', async () => {
+            const me = await tornApi('user/faction');
+            const own = me.faction && me.faction.id != null ? String(me.faction.id) : null;
+            if (!own) throw new Error("You're not in a faction.");
+            const w = await tornApi('faction/wars');
+            const ranked = w.wars && w.wars.ranked;
+            const enemy = ranked && (ranked.factions || []).find((f) => String(f.id) !== own);
+            if (!enemy) throw new Error('No ranked war found. Enter the enemy faction ID and tap Load faction.');
+            return loadFaction(String(enemy.id), enemy.name);
+        }));
+        const idVal = () => {
+            const v = String(($('cfg-nh-id').value || '')).trim();
+            if (!/^\d+$/.test(v)) throw new Error('Enter a numeric ID first.');
+            return v;
+        };
+        $('cfg-nh-fac').addEventListener('click', () => run('Loading faction…', async () => loadFaction(idVal())));
+        $('cfg-nh-add').addEventListener('click', () => run('Adding player…', async () => {
+            const pid = idVal();
+            let name = '';
+            try {
+                const d = await tornApi(`user/${pid}/basic`);
+                name = (d.profile && d.profile.name) || d.name || '';
+            } catch (e) { /* keep the ID even if the name lookup fails */ }
+            setNh(pid, name, true);
+            renderNh();
+            return `Added ${name || '#' + pid}.`;
+        }));
+        const nhClear = $('cfg-nh-clear');
+        let nhArm = null;
+        nhClear.addEventListener('click', () => {
+            if (!nhClear.classList.contains('armed')) {
+                nhClear.classList.add('armed');
+                nhClear.textContent = 'Tap again to clear';
+                nhArm = setTimeout(() => { nhClear.classList.remove('armed'); nhClear.textContent = 'Clear list'; }, 3000);
+                return;
+            }
+            clearTimeout(nhArm);
+            const was = new Set(noHit.keys());
+            noHit.clear();
+            saveNoHit();
+            refreshNoHit(was);
+            renderNh();
+            nhClear.classList.remove('armed');
+            nhClear.textContent = 'Clear list';
+            nhMsg.textContent = 'List cleared.';
+        });
+
         // Read every field from the DOM into a copy of S. Returns the new
         // settings, or an error string if the thresholds are out of order.
         const collect = () => {
             const next = Object.assign({}, S);
-            const boolKeys = ['SHOW_NAME_TIMER_BADGE', 'ENHANCE_STATUS_CELL', 'SKIP_CHAT', 'HIDE_WHEN_NO_DATA', 'SORT_TOOLBAR', 'HIDE_OWN_FACTION', 'DEBUG'];
+            const boolKeys = ['SHOW_NAME_TIMER_BADGE', 'ENHANCE_STATUS_CELL', 'SKIP_CHAT', 'HIDE_WHEN_NO_DATA', 'SORT_TOOLBAR', 'HIDE_OWN_FACTION', 'FF_INGAME', 'DEBUG'];
             const numKeys  = ['FF_GREEN', 'FF_YELLOW', 'FF_ORANGE', 'BS_YELLOW', 'BS_ORANGE', 'CACHE_HOURS', 'HOSP_ALERT_SEC'];
             const selKeys  = ['BADGE_STYLE', 'BADGE_SIZE', 'BADGE_PLACEMENT', 'THEME'];
             boolKeys.forEach((k) => { const el = $(`cfg-${k}`); if (el) next[k] = el.checked; });
@@ -1821,6 +2054,7 @@
         applyDisplayPrefs();
         injectStyles();
         loadStatsCache();
+        loadNoHit();
         const stored = keyGet();
         if (stored) {
             API_KEY = stored;
