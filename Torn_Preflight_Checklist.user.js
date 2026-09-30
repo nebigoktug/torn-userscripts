@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Pre-flight Checklist
 // @namespace    https://github.com/nebigoktug
-// @version      1.1.1
+// @version      1.2.0
 // @description  Before you fly: will your energy or nerve cap while you're away, will a drug / booster cooldown run out mid-flight, is your cash right for the trip, and is there a ranked war, chain or Organized Crime you'd miss. Checks against the real round-trip time for the destination and flight type you pick on the Travel Agency. Display only, no automation.
 // @author       Nebigoktug
 // @license      MIT
@@ -33,7 +33,7 @@
     // Torn PDA may inject on any URL containing "torn"; only run on the game.
     if (!/^(www\.)?torn\.com$/i.test(location.hostname)) return;
 
-    const VERSION  = '1.1.1';
+    const VERSION  = '1.2.0';
     const REPO_URL = 'https://github.com/nebigoktug/torn-userscripts';
     const LS_KEY   = 'tpc_api_key';
     const LS_PREFS = 'tpc_prefs';
@@ -177,7 +177,8 @@
     }
 
     // ------------------------------------------------------------ checks
-    // Each check: { level: 'ok' | 'warn' | 'bad' | 'info', title, text }
+    // Each check: { level: 'ok' | 'warn' | 'bad' | 'info', title, text, short }
+    // `short` is the one-liner shown in the Travel Agency banner (warn/bad only).
     function barCheck(label, bar, away, spendHint) {
         if (!bar) return null;
         const cur = Number(bar.current) || 0, max = Number(bar.maximum) || 0;
@@ -185,14 +186,15 @@
             return { level: 'ok', title: label, text: `Stacked above max (${cur}/${max}): no regen to lose while you're away.` };
         }
         if (cur >= max) {
-            return { level: 'bad', title: label, text: `Already full: every minute of the ${dur(away)} trip is wasted regen. ${spendHint}` };
+            return { level: 'bad', title: label, short: `${label} already full`,
+                text: `Already full: every minute of the ${dur(away)} trip is wasted regen. ${spendHint}` };
         }
         const full = Number(bar.full_time) || 0;
         if (full < away) {
             const wasted = away - full;
             const per = (Number(bar.increment) || 0) / Math.max(1, Number(bar.interval) || 1);
             const lost = Math.floor(wasted * per);
-            return { level: 'warn', title: label,
+            return { level: 'warn', title: label, short: `${label} caps in ${dur(full)} (~${lost} wasted)`,
                 text: `Full in ${dur(full)}, you're back in ${dur(away)}: about ${lost} ${label.toLowerCase()} of regen wasted. ${spendHint}` };
         }
         return { level: 'ok', title: label, text: `Won't cap: full in ${dur(full)}, you're back in ${dur(away)}.` };
@@ -200,10 +202,10 @@
     function cooldownCheck(label, left, away, what) {
         if (left == null) return null;
         if (left <= 0) {
-            return { level: 'warn', title: `${label} cooldown`, text: `Empty: nothing is ticking while you fly. Take ${what} before you go (or carry one; drugs can be used abroad from your travel inventory).` };
+            return { level: 'warn', title: `${label} cooldown`, short: `${label} cooldown empty`, text: `Empty: nothing is ticking while you fly. Take ${what} before you go (or carry one; drugs can be used abroad from your travel inventory).` };
         }
         if (left < away) {
-            return { level: 'warn', title: `${label} cooldown`, text: `Runs out in ${dur(left)}, ${dur(away - left)} before you're back.` };
+            return { level: 'warn', title: `${label} cooldown`, short: `${label} cooldown ends ${dur(away - left)} before you're back`, text: `Runs out in ${dur(left)}, ${dur(away - left)} before you're back.` };
         }
         return { level: 'ok', title: `${label} cooldown`, text: `Covers the trip (${dur(left)} left).` };
     }
@@ -231,10 +233,10 @@
         if (cash == null) {
             out.cash.push({ level: 'info', title: 'Cash', text: "Couldn't read your cash from the sidebar." });
         } else if (cash < need) {
-            out.cash.push({ level: 'bad', title: 'Cash', text: `${money(cash)} on hand, but the trip needs ${money(need)}` +
+            out.cash.push({ level: 'bad', title: 'Cash', short: `Cash short: withdraw ${money(need - cash)}`, text: `${money(cash)} on hand, but the trip needs ${money(need)}` +
                 `${ticket ? ` (ticket ${money(ticket)}${budget ? ` + ${money(budget)} shopping` : ''})` : ''}. Withdraw ${money(need - cash)}.` });
         } else if (budget > 0 && cash > need * 1.5 + 100000) {
-            out.cash.push({ level: 'warn', title: 'Cash', text: `${money(cash)} on hand, you plan to spend ${money(need)}. ` +
+            out.cash.push({ level: 'warn', title: 'Cash', short: `Bank the extra ${money(cash - need)} before you go`, text: `${money(cash)} on hand, you plan to spend ${money(need)}. ` +
                 `Bank the extra ${money(cash - need)} — cash in hand can be mugged abroad.` });
         } else if (budget === 0 && cash > ticket + 1000000) {
             out.cash.push({ level: 'info', title: 'Cash', text: `${money(cash)} on hand. Set a shopping budget below to check it against your plans.` });
@@ -253,24 +255,24 @@
         if (rw && !rw.winner && !(rw.end && rw.end <= t)) {
             const enemy = (rw.factions || []).map((f) => f.name).filter(Boolean).join(' vs ');
             if (rw.start <= t) {
-                out.faction.push({ level: 'bad', title: 'Ranked war', text: `In progress (${esc(enemy)}). You can't hit war targets from abroad.` });
+                out.faction.push({ level: 'bad', title: 'Ranked war', short: 'Ranked war in progress', text: `In progress (${esc(enemy)}). You can't hit war targets from abroad.` });
             } else if (rw.start - t < away) {
-                out.faction.push({ level: 'warn', title: 'Ranked war', text: `Starts in ${dur(rw.start - t)}, before you're back (${dur(away)}).` });
+                out.faction.push({ level: 'warn', title: 'Ranked war', short: `Ranked war starts in ${dur(rw.start - t)}`, text: `Starts in ${dur(rw.start - t)}, before you're back (${dur(away)}).` });
             } else {
                 out.faction.push({ level: 'ok', title: 'Ranked war', text: `Starts in ${dur(rw.start - t)}, after you're back.` });
             }
         }
         const ch = bars.chain;
         if (ch && Number(ch.current) >= CHAIN_MIN && Number(ch.timeout) > 0) {
-            out.faction.push({ level: 'warn', title: 'Chain', text: `Your faction is chaining (${ch.current} hits, ${dur(ch.timeout)} to the next hit). You can't help from abroad.` });
+            out.faction.push({ level: 'warn', title: 'Chain', short: `Faction is chaining (${ch.current} hits)`, text: `Your faction is chaining (${ch.current} hits, ${dur(ch.timeout)} to the next hit). You can't help from abroad.` });
         }
         const oc = u.organizedCrime;
         if (oc && oc.status && (oc.status === 'Planning' || oc.status === 'Recruiting')) {
             const ready = Number(oc.ready_at) || 0;
             if (ready && ready > t && ready - t < away) {
-                out.faction.push({ level: 'bad', title: 'Organized Crime', text: `${esc(oc.name)} is ready in ${dur(ready - t)}, before you're back (${dur(away)}).` });
+                out.faction.push({ level: 'bad', title: 'Organized Crime', short: `OC ready in ${dur(ready - t)}, before you're back`, text: `${esc(oc.name)} is ready in ${dur(ready - t)}, before you're back (${dur(away)}).` });
             } else if (ready && ready > t && ready - t < away * OC_MARGIN) {
-                out.faction.push({ level: 'warn', title: 'Organized Crime',
+                out.faction.push({ level: 'warn', title: 'Organized Crime', short: `OC ready only ${dur(ready - t - away)} after you're back`,
                     text: `${esc(oc.name)} is ready in ${dur(ready - t)}: only ${dur(ready - t - away)} after you're back. Cutting it close if the trip runs long.` });
             } else if (ready && ready > t) {
                 out.faction.push({ level: 'ok', title: 'Organized Crime', text: `${esc(oc.name)} is ready in ${dur(ready - t)}, after you're back.` });
@@ -311,16 +313,26 @@
         }
         #tpc-banner {
             position: fixed; left: 50%; top: 70px; transform: translateX(-50%); z-index: 2147483645;
-            max-width: 92vw; box-sizing: border-box; padding: 9px 14px; border-radius: 20px; cursor: pointer;
-            font: 700 13px Arial, Helvetica, sans-serif; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+            width: 420px; max-width: calc(100vw - 16px); box-sizing: border-box; padding: 8px 12px; border-radius: 10px;
+            cursor: pointer; text-align: left; white-space: normal; overflow-wrap: anywhere;
+            font: 13px/1.35 Arial, Helvetica, sans-serif;
             background: var(--tpc-bg); color: var(--tpc-fg); border: 2px solid var(--tpc-warn);
             box-shadow: 0 6px 20px var(--tpc-shadow);
         }
         /* In the page, under Torn's title: doesn't cover the bars. */
-        #tpc-banner.tpc-inline { position: static; transform: none; display: block; max-width: 100%;
-            margin: 0 0 10px; border-radius: 10px; white-space: normal; box-shadow: none; }
+        #tpc-banner.tpc-inline { position: static; transform: none; display: block; width: auto; max-width: 100%;
+            margin: 0 0 10px; box-shadow: none; }
         #tpc-banner.bad { border-color: var(--tpc-bad); }
         #tpc-banner.ok  { border-color: var(--tpc-ok); }
+        /* Torn's dark-mode CSS greys spans; pin our colours. */
+        #tpc-banner, #tpc-banner * { color: var(--tpc-fg) !important; }
+        #tpc-banner .tpc-bhead { font-weight: 700; }
+        #tpc-banner .tpc-blist { list-style: none; margin: 5px 0 0; padding: 0; }
+        #tpc-banner .tpc-blist li { display: flex; gap: 6px; padding: 2px 0; }
+        #tpc-banner .tpc-blist i { flex: 0 0 12px; font-style: normal; font-weight: 900; text-align: center; }
+        #tpc-banner .tpc-blist li.warn i { color: var(--tpc-warn) !important; }
+        #tpc-banner .tpc-blist li.bad  i { color: var(--tpc-bad) !important; }
+        #tpc-banner .tpc-bfoot { margin-top: 4px; font-size: 11px; color: var(--tpc-muted) !important; }
         #tpc-overlay {
             position: fixed; inset: 0; z-index: 2147483647; background: rgba(0,0,0,0.7);
             display: flex; align-items: center; justify-content: center; font-family: Arial, Helvetica, sans-serif;
@@ -570,7 +582,7 @@
     let bannerHidden = false;    // removed because you're flying; don't re-add it
 
     // ------------------------------------------------------------ travel page banner
-    // On the Travel Agency, a one-line summary at the top; tap it for details.
+    // On the Travel Agency, a summary at the top listing any problems; tap it for details.
     const onTravelPage = () => /\/page\.php$/i.test(location.pathname) && /[?&]sid=travel\b/i.test(location.search);
     async function updateBanner() {
         let el = document.getElementById('tpc-banner');
@@ -592,21 +604,26 @@
         }
         const inline = el.classList.contains('tpc-inline');
         const cls = (c) => { el.className = (inline ? 'tpc-inline ' : '') + c; };
-        if (!key) { cls(''); el.textContent = '✈️ Pre-flight checklist: tap to set up'; return; }
+        if (!key) { cls(''); el.innerHTML = '<div class="tpc-bhead">✈️ Pre-flight checklist: tap to set up</div>'; return; }
         try {
             const data = await loadData(key, false);
             // In the air: nothing to check before this flight any more.
             if (inFlight(data)) { el.remove(); bannerHidden = true; return; }
             const trip = tripSeconds(prefs);
-            const { bad, warn } = tally(buildChecks(data, trip));
-            const where = `${prefs.dest} (${METHODS[prefs.method] || prefs.method})${pickedOnPage ? '' : ' · pick a country'}`;
+            const checks = buildChecks(data, trip);
+            const { bad, warn } = tally(checks);
+            // Problems first, then warnings, each as a one-liner: no tap needed to see them.
+            const all = [].concat(...Object.values(checks));
+            const issues = all.filter((c) => c.level === 'bad').concat(all.filter((c) => c.level === 'warn'));
             cls(bad ? 'bad' : warn ? '' : 'ok');
-            el.textContent = bad || warn
-                ? `✈️ Pre-flight: ${bad ? `${bad} problem${bad > 1 ? 's' : ''}` : ''}${bad && warn ? ', ' : ''}${warn ? `${warn} warning${warn > 1 ? 's' : ''}` : ''} for ${where} — tap`
-                : `✈️ Pre-flight: all clear for ${where} — tap for details`;
+            el.innerHTML = `
+                <div class="tpc-bhead">✈️ ${esc(prefs.dest)} (${esc(METHODS[prefs.method] || prefs.method)}) · back in ${dur(trip.total)}${issues.length ? '' : ' · all clear ✓'}</div>
+                ${issues.length ? `<ul class="tpc-blist">${issues.map((c) =>
+                    `<li class="${c.level}"><i>${ICON[c.level]}</i><span>${esc(c.short || c.title)}</span></li>`).join('')}</ul>` : ''}
+                <div class="tpc-bfoot">${pickedOnPage ? '' : 'Tap a country below to check that trip · '}Tap here for details</div>`;
         } catch (e) {
             cls('bad');
-            el.textContent = `✈️ Pre-flight: ${e.message}`;
+            el.innerHTML = `<div class="tpc-bhead">✈️ Pre-flight: ${esc(e.message)}</div>`;
         }
     }
 
