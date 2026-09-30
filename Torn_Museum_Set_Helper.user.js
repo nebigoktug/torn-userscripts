@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Torn Museum Set Helper
 // @namespace    https://github.com/nebigoktug
-// @version      3.1.0
-// @description  Every museum set in one panel: flowers, plushies and artifacts (coins, arrowheads, sculptures, Companion Scripts, Senet, amulet…). Counts what you own, shows complete sets and what's missing for a target, where flowers and plushies are sold abroad, what the missing items cost on the item market, and the profit of exchanging sets for points. Display only, no automation.
+// @version      3.2.0
+// @description  Every museum set in one panel: flowers, plushies and artifacts (coins, arrowheads, sculptures, Companion Scripts, Senet, amulet…). Counts what you own, shows complete sets and what's missing for a target, where flowers and plushies are sold abroad, what the missing items cost on the item market and in player bazaars (via weav3r.dev), and the profit of exchanging sets for points. Display only, no automation.
 // @author       Nebigoktug
 // @license      MIT
 // @supportURL   https://github.com/nebigoktug/torn-userscripts/issues
@@ -45,11 +45,12 @@
     if (window.__tfsRunning) return;
     window.__tfsRunning = true;
 
-    const VERSION  = '3.1.0';
+    const VERSION  = '3.2.0';
     const REPO_URL = 'https://github.com/nebigoktug/torn-userscripts';
     const LS_KEY   = 'tfs_api_key';             // same key as the old Flower Set Helper
     const LS_PREFS = 'tfs_prefs';
     const LS_PRICES = 'tfs_prices';
+    const LS_BAZAAR = 'tfs_bazaar';
     const LS_PAGEINV = 'tms_page_inv';      // counts read from your own Items page, per group
     const LS_ARTIFACTS = 'tms_artifact_ids'; // artifact name -> item ID, from the Torn API
     const ARTIFACT_IDS_TTL_MS = 7 * 24 * 3600 * 1000;
@@ -58,6 +59,8 @@
     const INV_MIN_AGE_MS = 60 * 1000;       // Refresh refetches the inventory at most once a minute
     const RATE_PAUSE_MS  = 60 * 1000;       // no API calls for this long after "too many requests"
     const REQUEST_GAP_MS = 250;             // spacing between market requests
+    const BAZAAR_GAP_MS  = 700;             // weav3r's limit is shared by every user of it
+    const BAZAAR_STALE_MS = 30 * 60 * 1000; // bazaar listings not re-checked for this long may be sold
     const MUSEUM_DAY_BONUS = 1.1;           // Museum Day: 10% more points
 
     // Flower and plushie IDs verified against TornTools' SETS lists.
@@ -118,7 +121,7 @@
     ];
     const groupOf = (key) => GROUPS.find((g) => g.key === key) || GROUPS[0];
 
-    const DEFAULT_PREFS = { group: 'flowers', artifactSet: 'coins', showPrices: true, museumDay: false,
+    const DEFAULT_PREFS = { group: 'flowers', artifactSet: 'coins', showPrices: true, bazaars: true, museumDay: false,
         targets: { flowers: 10, plushies: 10, artifacts: 1 } };
 
     // ------------------------------------------------------------ storage
@@ -265,6 +268,41 @@
         return price;
     }
 
+    // Player bazaars, from weav3r.dev (public, no key sent). Torn's page won't
+    // let a script fetch() other sites, so on Torn PDA this goes through
+    // PDA_httpGet; elsewhere a plain fetch is tried and, if blocked, prices
+    // simply stay item-market only.
+    let bazaarDown = null;   // why bazaar prices are missing this session, if they are
+    function httpGetText(url) {
+        if (typeof PDA_httpGet === 'function') {
+            return PDA_httpGet(url).then((r) => (r.responseText != null ? r.responseText : (r.response || '')));
+        }
+        return fetch(url).then((r) => r.text());
+    }
+    function bazaarCache() { try { return JSON.parse(lsGet(LS_BAZAAR) || '{}'); } catch (e) { return {}; } }
+    async function fetchBazaar(id, ttl = PRICE_TTL_MS) {
+        const cache = bazaarCache();
+        const c = cache[id];
+        if (c && Date.now() - c.ts < ttl) return { listings: c.listings, cached: true };
+        let d;
+        try { d = JSON.parse(await httpGetText(`https://weav3r.dev/api/marketplace/${id}`)); }
+        catch (e) { bazaarDown = 'bazaar prices unavailable here'; return { listings: [], cached: false }; }
+        const now = Date.now() / 1000;
+        let rows = (d && Array.isArray(d.listings) ? d.listings : [])
+            .filter((l) => l.player_id && Number(l.price) > 0)
+            .map((l) => ({ price: Number(l.price), amount: Number(l.quantity) || 1, pid: l.player_id,
+                age: now - Number(l.last_checked || l.content_updated || 0) }));
+        const fresh = rows.filter((l) => l.age * 1000 < BAZAAR_STALE_MS);
+        if (fresh.length) rows = fresh;
+        const listings = rows.map(({ price, amount, pid }) => ({ price, amount, pid })).sort((a, b) => a.price - b.price);
+        // Cap what's stored: the cheapest 30 are plenty for any set.
+        cache[id] = { ts: Date.now(), listings: listings.slice(0, 30) };
+        lsSet(LS_BAZAAR, JSON.stringify(cache));
+        bazaarDown = null;
+        return { listings: cache[id].listings, cached: false };
+    }
+    const bazaarUrl = (pid) => `https://www.torn.com/bazaar.php?userId=${encodeURIComponent(pid)}`;
+
     // Cost of buying `qty` from the cheapest listings. `partial` means the
     // listings we got didn't cover the whole quantity (cost is then a floor).
     function costFor(listings, qty) {
@@ -275,7 +313,7 @@
             cost += take * l.price;
             left -= take;
         }
-        return { cost, partial: left > 0, cheapest: listings.length ? listings[0].price : null };
+        return { cost, partial: left > 0, cheapest: listings.length ? listings[0].price : null, first: listings[0] || null };
     }
 
     // ------------------------------------------------------------ styles
@@ -355,6 +393,8 @@
         #tfs-overlay select#tfs-set { width: 100%; box-sizing: border-box; margin-bottom: 10px; padding: 7px 8px; font-size: 13px;
             border-radius: 6px; background: var(--tfs-bg2); color: var(--tfs-fg); border: 1px solid var(--tfs-border); }
         #tfs-overlay .tfs-qty { font-size: 11px; font-weight: 700; color: var(--tfs-muted) !important; }
+        #tfs-overlay .tfs-bz { display: inline-block; margin-left: 3px; padding: 0 3px; border-radius: 3px; font-size: 9px; font-weight: 800;
+            line-height: 13px; vertical-align: 1px; background: #e08a1e; color: #fff !important; }
         #tfs-overlay input[type="checkbox"] { accent-color: var(--tfs-accent); width: 16px; height: 16px; }
         #tfs-overlay .tfs-summary { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; margin-bottom: 10px; }
         #tfs-overlay .tfs-stat { background: var(--tfs-bg2); border: 1px solid var(--tfs-border); border-radius: 8px;
@@ -403,7 +443,7 @@
     // Torn API ToS: shown wherever the key is entered.
     const TOS_ROWS = [
         ['Data storage', 'Only locally: your key, targets, a 10-minute price cache and the artifact item list stay in this browser.'],
-        ['Data sharing', 'Nobody. Requests go only to api.torn.com.'],
+        ['Data sharing', 'Nobody. Your key goes only to api.torn.com. Bazaar prices come from weav3r.dev (public, no key or player data sent).'],
         ['Purpose of use', 'Personal gain: planning museum sets.'],
         ['Key storage & sharing', 'Stored locally on this device. Not shared.'],
         ['Key access level', 'Minimal (user → inventory). Item list and market prices use public data.'],
@@ -490,6 +530,7 @@
             <div class="tfs-controls">
                 <label>Target sets <input type="number" id="tfs-target" min="1" step="1" value="${target}"></label>
                 <label><input type="checkbox" id="tfs-prices" ${prefs.showPrices ? 'checked' : ''}> Prices</label>
+                <label title="Include player bazaars (weav3r.dev)"><input type="checkbox" id="tfs-bazaars" ${prefs.bazaars ? 'checked' : ''}> Bazaars</label>
                 <label title="Museum Day event: 10% more points"><input type="checkbox" id="tfs-mday" ${prefs.museumDay ? 'checked' : ''}> Museum Day</label>
                 <button class="tfs-btn" id="tfs-refresh">Refresh</button>
                 <button class="tfs-btn tfs-btn2" id="tfs-live" title="Read your live ${g.cat.toLowerCase()} counts now (one request, only when you tap)">Live counts</button>
@@ -497,16 +538,18 @@
             <div id="tfs-out"><div class="tfs-msg">Loading…</div></div>`;
         const targetEl = b.querySelector('#tfs-target');
         const prices = b.querySelector('#tfs-prices');
+        const bazaars = b.querySelector('#tfs-bazaars');
         const mday = b.querySelector('#tfs-mday');
         const onChange = () => {
             const t = Math.max(1, parseInt(targetEl.value, 10) || 1);
-            prefs = Object.assign({}, prefs, { showPrices: prices.checked, museumDay: mday.checked,
+            prefs = Object.assign({}, prefs, { showPrices: prices.checked, bazaars: bazaars.checked, museumDay: mday.checked,
                 targets: Object.assign({}, prefs.targets, { [g.key]: t }) });
             savePrefs(prefs);
             refresh(false);
         };
         targetEl.addEventListener('change', onChange);
         prices.addEventListener('change', onChange);
+        bazaars.addEventListener('change', onChange);
         mday.addEventListener('change', onChange);
         b.querySelectorAll('.tfs-tabs button').forEach((btn) => btn.addEventListener('click', () => {
             const k = btn.getAttribute('data-group');
@@ -602,16 +645,29 @@
             renderTable(out, rows, sets, ctx, null);
 
             if (prefs.showPrices) {
-                let total = 0, partial = false;
+                let total = 0, partial = false, saved = 0;
                 let fullSet = 0, fullPartial = false;
                 for (const r of rows) {
                     if (token !== refreshToken) return;
                     if (!r.f.id) { r.cheapest = null; r.cost = 0; r.setCost = null; continue; }
                     const cached = priceCache()[r.f.id];
                     const wasCached = cached && Date.now() - cached.ts < priceTtl;
-                    const listings = await fetchListings(r.f.id, key, priceTtl);
+                    const market = await fetchListings(r.f.id, key, priceTtl);
+                    let listings = market;
+                    let bzCached = true;
+                    if (prefs.bazaars) {
+                        const bz = await fetchBazaar(r.f.id, priceTtl);
+                        bzCached = bz.cached;
+                        if (bz.listings.length) listings = market.concat(bz.listings).sort((a, b) => a.price - b.price);
+                    }
+                    if (token !== refreshToken) return;
                     const c = costFor(listings, r.missing);
                     r.cheapest = c.cheapest;
+                    r.cheapestPid = c.first && c.first.pid;
+                    if (prefs.bazaars && r.missing) {
+                        r.saved = Math.max(0, costFor(market, r.missing).cost - c.cost);
+                        saved += r.saved;
+                    }
                     r.cost = r.missing ? c.cost : 0;
                     r.partial = r.missing > 0 && c.partial;
                     total += r.cost;
@@ -621,14 +677,15 @@
                     r.setCost = listings.length ? one.cost : null;
                     fullPartial = fullPartial || one.partial;
                     if (token !== refreshToken) return;
-                    renderTable(out, rows, sets, ctx, { total, partial });
-                    if (!wasCached) await sleep(REQUEST_GAP_MS);
+                    renderTable(out, rows, sets, ctx, { total, partial, saved });
+                    if (!bzCached) await sleep(BAZAAR_GAP_MS);
+                    else if (!wasCached) await sleep(REQUEST_GAP_MS);
                 }
                 // Points side of the trade: what a set is worth at the museum.
                 const pointPrice = await fetchPointPrice(key, priceTtl);
                 if (token !== refreshToken) return;
                 fullSet = rows.every((r) => r.setCost != null) ? rows.reduce((s, r) => s + r.setCost, 0) : null;
-                renderTable(out, rows, sets, ctx, { total, partial, pointPrice, fullSet, fullPartial });
+                renderTable(out, rows, sets, ctx, { total, partial, saved, pointPrice, fullSet, fullPartial });
             }
         } catch (e) {
             if (token !== refreshToken) return;
@@ -697,7 +754,9 @@
                         <td>${r.f.id ? `<a href="${marketUrl(r.f, g.cat)}">${esc(r.f.name)}</a>` : esc(r.f.name)}${r.f.qty > 1 ? ` <span class="tfs-qty">×${r.f.qty}</span>` : ''}${r.f.country ? `<span class="country">${esc(r.f.country)}</span>` : ''}</td>
                         <td class="num">${r.have}</td>
                         <td class="num">${r.missing ? `<span class="tfs-miss">${r.missing}</span>` : '<span class="tfs-okmark">✓</span>'}</td>
-                        ${showPrices ? `<td class="num">${r.cheapest === undefined ? '…' : money(r.cheapest)}</td>
+                        ${showPrices ? `<td class="num">${r.cheapest === undefined ? '…' : r.cheapestPid
+                            ? `<a href="${bazaarUrl(r.cheapestPid)}" title="Cheapest is in a player's bazaar">${money(r.cheapest)}</a><span class="tfs-bz">B</span>`
+                            : money(r.cheapest)}</td>
                             <td class="num">${r.cost === undefined ? '…' : r.missing ? money(r.cost) + (r.partial ? '+' : '') : '—'}</td>` : ''}
                     </tr>`).join('')}
             </table>
@@ -711,7 +770,11 @@
                            Tap <b>Live counts</b> for up-to-the-second numbers.`;
                 })()}
                 Items in your display case aren't counted.
-                ${showPrices ? 'Costs walk the cheapest item-market listings; "+" means the listings shown didn\'t cover the full amount.' : ''}
+                ${showPrices ? (prefs.bazaars
+                    ? `Costs walk the cheapest listings on the item market and in player bazaars (<span class="tfs-bz">B</span> = bazaar, tap to open;
+                       bazaar data from weav3r.dev, a few minutes old).${cost && cost.saved > 0 ? ` Bazaars save <b>${money(cost.saved)}</b> here.` : ''}
+                       ${bazaarDown ? ` <span class="tfs-miss">(${esc(bazaarDown)})</span>` : ''}`
+                    : 'Costs walk the cheapest item-market listings.') + ' "+" means the listings shown didn\'t cover the full amount.' : ''}
             </div>`;
     }
 
