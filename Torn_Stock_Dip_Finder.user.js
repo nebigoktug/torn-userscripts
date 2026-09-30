@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Stock Dip Finder
 // @namespace    https://github.com/nebigoktug
-// @version      1.0.0
+// @version      1.0.1
 // @description  Swing-trading helper for Torn's stock market: shows which stock has dipped furthest below its recent average (a buy candidate), and for your open trades the target sell price and the "sell by" day. Rule backtested on ~5 years of daily prices. Display only: you buy and sell yourself.
 // @author       Nebigoktug
 // @license      MIT
@@ -9,7 +9,9 @@
 // @match        https://www.torn.com/*
 // @match        https://torn.com/*
 // @run-at       document-idle
-// @grant        none
+// @grant        GM_xmlhttpRequest
+// @grant        GM.xmlHttpRequest
+// @connect      tornsy.com
 // @downloadURL  https://raw.githubusercontent.com/nebigoktug/torn-userscripts/main/Torn_Stock_Dip_Finder.user.js
 // @updateURL    https://raw.githubusercontent.com/nebigoktug/torn-userscripts/main/Torn_Stock_Dip_Finder.user.js
 // ==/UserScript==
@@ -43,7 +45,7 @@
     if (window.__tsdRunning) return;
     window.__tsdRunning = true;
 
-    const VERSION  = '1.0.0';
+    const VERSION  = '1.0.1';
     const REPO_URL = 'https://github.com/nebigoktug/torn-userscripts';
     const LS_KEY   = 'tsd_api_key';
     const LS_PREFS = 'tsd_prefs';
@@ -113,9 +115,28 @@
     // ------------------------------------------------------------ price history (tornsy.com)
     // Daily closes only change once a day, so they are fetched once per UTC
     // day and kept locally. Today's unfinished day is left out.
+    // Torn's page only lets scripts fetch() a few sites, so tornsy.com goes
+    // through Torn PDA's or the script manager's own request function.
+    function httpGet(url) {
+        return new Promise((resolve, reject) => {
+            if (typeof PDA_httpGet === 'function') {
+                try {
+                    PDA_httpGet(url).then((r) => resolve(r.responseText != null ? r.responseText : (r.response || '')), reject);
+                } catch (e) { reject(e); }
+                return;
+            }
+            const gm = typeof GM_xmlhttpRequest === 'function' ? GM_xmlhttpRequest
+                : (typeof GM !== 'undefined' && GM && typeof GM.xmlHttpRequest === 'function') ? GM.xmlHttpRequest : null;
+            if (gm) {
+                gm({ method: 'GET', url, timeout: 20000,
+                    onload: (r) => resolve(r.responseText), onerror: reject, ontimeout: () => reject(new Error('timeout')) });
+                return;
+            }
+            fetch(url).then((r) => r.text()).then(resolve, reject);
+        });
+    }
     async function tornsyCloses(sym) {
-        const r = await fetch(`https://tornsy.com/api/${encodeURIComponent(sym)}?interval=d1&limit=${HIST_DAYS + 1}`);
-        const d = await r.json();
+        const d = JSON.parse(await httpGet(`https://tornsy.com/api/${encodeURIComponent(sym)}?interval=d1&limit=${HIST_DAYS + 1}`));
         if (!d || !Array.isArray(d.data)) throw new Error((d && d.error) || 'bad data');
         const today = Math.floor(now() / DAY) * DAY;
         return d.data.filter((row) => Number(row[0]) < today).map((row) => Number(row[4])).slice(-HIST_DAYS);
@@ -129,16 +150,17 @@
         if (histLoading) return histLoading;
         histLoading = (async () => {
             const out = { day: today, closes: h && h.day === today ? h.closes : {} };
-            let failed = 0;
+            let failed = 0, lastErr = null;
             // A few at a time: 35 small requests, once a day.
             for (let i = 0; i < missing.length; i += 5) {
                 await Promise.all(missing.slice(i, i + 5).map(async (s) => {
-                    try { out.closes[s] = await tornsyCloses(s); } catch (e) { failed++; }
+                    try { out.closes[s] = await tornsyCloses(s); } catch (e) { failed++; lastErr = e; }
                 }));
             }
             if (failed === missing.length && missing.length) {
                 if (h) return h; // keep yesterday's rather than nothing
-                throw new Error('Could not load price history from tornsy.com.');
+                const why = lastErr && (lastErr.message || lastErr.error || String(lastErr));
+                throw new Error('Could not load price history from tornsy.com' + (why ? ` (${why})` : '') + '.');
             }
             lsSet(LS_HIST, JSON.stringify(out));
             return out;
