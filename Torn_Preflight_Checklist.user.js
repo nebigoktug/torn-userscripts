@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Pre-flight Checklist
 // @namespace    https://github.com/nebigoktug
-// @version      1.3.0
+// @version      1.3.1
 // @description  Before you fly: will your energy or nerve cap while you're away, will a drug / booster cooldown run out mid-flight, is your cash right for the trip, and is there a ranked war, chain or Organized Crime you'd miss. Checks against the real round-trip time for the destination and flight type you pick on the Travel Agency. Display only, no automation.
 // @author       Nebigoktug
 // @license      MIT
@@ -38,7 +38,7 @@
     if (window.__tpcRunning) return;
     window.__tpcRunning = true;
 
-    const VERSION  = '1.3.0';
+    const VERSION  = '1.3.1';
     const REPO_URL = 'https://github.com/nebigoktug/torn-userscripts';
     const LS_KEY   = 'tpc_api_key';
     const LS_PREFS = 'tpc_prefs';
@@ -179,6 +179,13 @@
     function inFlight(data) {
         const t = data && data.user && data.user.travel;
         return t && Number(t.time_left) > 0 ? Number(t.time_left) : 0;
+    }
+
+    // Landed somewhere other than Torn. Abroad the shop page has the same
+    // address as the Travel Agency, but there's no flight to check from there.
+    function abroad(data) {
+        const t = data && data.user && data.user.travel;
+        return !!(t && t.destination && t.destination !== 'Torn' && !(Number(t.time_left) > 0));
     }
 
     // ------------------------------------------------------------ checks
@@ -576,7 +583,7 @@
         updateBanner();
     }
     let pickedOnPage = false;
-    let bannerHidden = false;    // removed because you're flying; don't re-add it
+    let bannerHidden = false;    // removed because you're flying or abroad; don't re-add it
 
     // ------------------------------------------------------------ travel page banner
     // On the Travel Agency, a summary at the top listing any problems; tap it for details.
@@ -605,7 +612,7 @@
         try {
             const data = await loadData(key, false);
             // In the air: nothing to check before this flight any more.
-            if (inFlight(data)) { el.remove(); bannerHidden = true; return; }
+            if (inFlight(data) || abroad(data)) { el.remove(); bannerHidden = true; return; }
             const trip = tripSeconds(prefs);
             const checks = buildChecks(data, trip);
             const { bad, warn } = tally(checks);
