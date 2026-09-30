@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Pre-flight Checklist
 // @namespace    https://github.com/nebigoktug
-// @version      1.2.1
+// @version      1.2.2
 // @description  Before you fly: will your energy or nerve cap while you're away, will a drug / booster cooldown run out mid-flight, is your cash right for the trip, and is there a ranked war, chain or Organized Crime you'd miss. Checks against the real round-trip time for the destination and flight type you pick on the Travel Agency. Display only, no automation.
 // @author       Nebigoktug
 // @license      MIT
@@ -32,8 +32,13 @@
 
     // Torn PDA may inject on any URL containing "torn"; only run on the game.
     if (!/^(www\.)?torn\.com$/i.test(location.hostname)) return;
+    // Torn PDA can inject the script again on in-page navigation. Without this
+    // guard every copy kept its own timers and observers, and the page got
+    // slower the longer PDA stayed open.
+    if (window.__tpcRunning) return;
+    window.__tpcRunning = true;
 
-    const VERSION  = '1.2.1';
+    const VERSION  = '1.2.2';
     const REPO_URL = 'https://github.com/nebigoktug/torn-userscripts';
     const LS_KEY   = 'tpc_api_key';
     const LS_PREFS = 'tpc_prefs';

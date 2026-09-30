@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn FF/BS Badges
 // @namespace    https://github.com/tornffbs
-// @version      2.7.1
+// @version      2.7.2
 // @description  FairFight + estimated battle-stat badges next to player names (via FFScouter), live hospital/travel timers, a sort/filter bar on faction and war member lists, and a don't-attack list (war terms, allies, your own faction) with an attack-page warning, with an in-page settings panel. Needs a Torn API key registered with FFScouter. Works on Torn PDA and desktop userscript managers.
 // @author       Nebigoktug
 // @license      MIT
@@ -27,11 +27,16 @@
     // merely contains "torn", ignoring @match — bail out unless this is the
     // real game site (also skips api.torn.com and other subdomains).
     if (!/^(www\.)?torn\.com$/i.test(location.hostname)) return;
+    // Torn PDA can inject the script again on in-page navigation. Without this
+    // guard every copy kept its own timers and observers, and the page got
+    // slower the longer PDA stayed open.
+    if (window.__ffbsRunning) return;
+    window.__ffbsRunning = true;
 
     /* =======================================================================
      * CONFIG DEFAULTS  — user-overridable ones live in SETTINGS (⚙ panel)
      * ===================================================================== */
-    const VERSION        = '2.7.1';           // keep in sync with @version
+    const VERSION        = '2.7.2';           // keep in sync with @version
     const REPO_URL       = 'https://github.com/nebigoktug/torn-userscripts';
     const LS_KEY         = 'ffbs_api_key';    // where the key is stored locally
     const LS_SETTINGS    = 'ffbs_settings';   // where the ⚙ panel settings live
