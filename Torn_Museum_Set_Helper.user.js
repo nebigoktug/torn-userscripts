@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Museum Set Helper
 // @namespace    https://github.com/nebigoktug
-// @version      3.0.0
+// @version      3.0.1
 // @description  Every museum set in one panel: flowers, plushies and artifacts (coins, arrowheads, sculptures, Companion Scripts, Senet, amulet…). Counts what you own, shows complete sets and what's missing for a target, where flowers and plushies are sold abroad, what the missing items cost on the item market, and the profit of exchanging sets for points. Display only, no automation.
 // @author       Nebigoktug
 // @license      MIT
@@ -40,7 +40,7 @@
     // Torn PDA may inject on any URL containing "torn"; only run on the game.
     if (!/^(www\.)?torn\.com$/i.test(location.hostname)) return;
 
-    const VERSION  = '3.0.0';
+    const VERSION  = '3.0.1';
     const REPO_URL = 'https://github.com/nebigoktug/torn-userscripts';
     const LS_KEY   = 'tfs_api_key';             // same key as the old Flower Set Helper
     const LS_PREFS = 'tfs_prefs';
@@ -946,8 +946,9 @@
         mountButton();
         // Torn's SPA re-renders the footer; re-mount when our button goes missing.
         let pending = false;
+        // Idle in background tabs (Torn PDA keeps them running); catch up on return.
         new MutationObserver(() => {
-            if (pending) return;
+            if (pending || document.hidden) return;
             pending = true;
             setTimeout(() => {
                 pending = false;
@@ -956,6 +957,7 @@
                 if (!ok) mountButton();
             }, 300);
         }).observe(document.body, { childList: true, subtree: true });
+        document.addEventListener('visibilitychange', () => { if (!document.hidden) mountButton(); });
     }
 
     start();

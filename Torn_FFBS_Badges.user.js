@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn FF/BS Badges
 // @namespace    https://github.com/tornffbs
-// @version      2.7.0
+// @version      2.7.1
 // @description  FairFight + estimated battle-stat badges next to player names (via FFScouter), live hospital/travel timers, a sort/filter bar on faction and war member lists, and a don't-attack list (war terms, allies, your own faction) with an attack-page warning, with an in-page settings panel. Needs a Torn API key registered with FFScouter. Works on Torn PDA and desktop userscript managers.
 // @author       Nebigoktug
 // @license      MIT
@@ -31,7 +31,7 @@
     /* =======================================================================
      * CONFIG DEFAULTS  — user-overridable ones live in SETTINGS (⚙ panel)
      * ===================================================================== */
-    const VERSION        = '2.7.0';           // keep in sync with @version
+    const VERSION        = '2.7.1';           // keep in sync with @version
     const REPO_URL       = 'https://github.com/nebigoktug/torn-userscripts';
     const LS_KEY         = 'ffbs_api_key';    // where the key is stored locally
     const LS_SETTINGS    = 'ffbs_settings';   // where the ⚙ panel settings live
@@ -1236,13 +1236,14 @@
             return badge;
         };
         const setText = (t) => { if (badge.textContent !== t) badge.textContent = t; };
+        const setTitle = (t) => { if (badge.title !== t) badge.title = t; };
         if (!status || !status.state) { remove(); return; }
         const remaining = status.until ? status.until - Math.floor(Date.now() / 1000) : 0;
         if (TIMER_STATES.includes(status.state)) {
             if (remaining <= 0) { remove(); return; }
             ensure('ffbs-timer-hosp' + (hospSoon(remaining) ? ' ffbs-soon' : ''));
             setText(formatDuration(remaining));
-            badge.title = `${status.state}: out in ${badge.textContent}`;
+            setTitle(`${status.state}: out in ${badge.textContent}`);
             return;
         }
         if (status.state === 'Traveling' || status.state === 'Abroad') {
@@ -1250,10 +1251,10 @@
             ensure('ffbs-timer-travel');
             if (t.direction === 'abroad' || remaining <= 0) {
                 setText(t.abbr);
-                badge.title = status.description || `Abroad: ${t.country || t.abbr}`;
+                setTitle(status.description || `Abroad: ${t.country || t.abbr}`);
             } else {
                 setText(`${t.abbr} ${formatDuration(remaining)}`);
-                badge.title = `${status.description} — lands in ${formatDuration(remaining)}`;
+                setTitle(`${status.description} — lands in ${formatDuration(remaining)}`);
             }
             return;
         }
@@ -1501,7 +1502,7 @@
      * SCAN + TICK
      * ===================================================================== */
     function scanPage() {
-        if (!API_KEY) return;
+        if (!API_KEY || document.hidden) return; // background PDA tabs stay idle
         if (factionKey() !== currentFactionKey) fetchFactionStatuses();
         const ttl = statsTtlMs();
         playerLinks().forEach(({ link, pid }) => {
@@ -1527,22 +1528,52 @@
     // Our own UI nodes; mutations that only add these are ignored so badge
     // updates can't trigger a rescan loop.
     const OWN_NODES = '.ffbs-badge, .ffbs-toolbar, #ffbs-setup, #ffbs-config, #ffbs-gear, [data-ffbs-gear], #ffbs-reopen, #ffbs-styles, #ffbs-attack-warn';
+    // Only new player links need a full scan. Torn adds nodes all the time
+    // (chat, timers, ads); for those we just make sure the ⚙ button is still
+    // there and notice SPA navigation. Scanning on every one of them made
+    // pages sluggish on phones.
+    const PLAYER_LINK = 'a[href*="XID="]';
+    let lightDebounce = null;
+    let lastHref = location.href;
+    let visHooked = false;
+    function scheduleLight() {
+        if (lightDebounce) return;
+        lightDebounce = setTimeout(() => {
+            lightDebounce = null;
+            if (document.hidden) return;
+            showGearButton();
+            if (location.href !== lastHref) { lastHref = location.href; scheduleScan(); }
+        }, SCAN_DEBOUNCE_MS);
+    }
     function startObserver() {
         if (observer || typeof MutationObserver !== 'function') return;
         observer = new MutationObserver((mutations) => {
+            let other = false;
             for (const mu of mutations) {
                 for (const n of mu.addedNodes) {
-                    if (n.nodeType === 1 && !n.matches(OWN_NODES)) { scheduleScan(); return; }
+                    if (n.nodeType !== 1 || n.matches(OWN_NODES)) continue;
+                    if (n.matches(PLAYER_LINK) || n.querySelector(PLAYER_LINK)) { scheduleScan(); return; }
+                    other = true;
                 }
             }
+            if (other) scheduleLight();
         });
         observer.observe(document.body || document.documentElement, { childList: true, subtree: true });
+        // Catch up at once when a hidden tab comes back to the front.
+        if (!visHooked) {
+            visHooked = true;
+            document.addEventListener('visibilitychange', () => {
+                if (!document.hidden && observer) { scheduleScan(); tickTimers(); }
+            });
+        }
     }
     function stopObserver() {
         if (observer) { observer.disconnect(); observer = null; }
         if (scanDebounce) { clearTimeout(scanDebounce); scanDebounce = null; }
+        if (lightDebounce) { clearTimeout(lightDebounce); lightDebounce = null; }
     }
     function tickTimers() {
+        if (document.hidden) return;
         if (S.SHOW_NAME_TIMER_BADGE) {
             document.querySelectorAll(`a[${BADGE_ATTR}]`).forEach((link) => {
                 const pid = link.getAttribute(BADGE_ATTR);
