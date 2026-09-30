@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Pre-flight Checklist
 // @namespace    https://github.com/nebigoktug
-// @version      1.4.0
+// @version      1.4.1
 // @description  Before you fly: will your energy or nerve cap while you're away, will a drug / booster cooldown run out mid-flight, is your cash right for the trip, and is there a ranked war, chain or Organized Crime you'd miss. Checks against the real round-trip time for the destination and flight type you pick on the Travel Agency. Display only, no automation.
 // @author       Nebigoktug
 // @license      MIT
@@ -38,7 +38,7 @@
     if (window.__tpcRunning) return;
     window.__tpcRunning = true;
 
-    const VERSION  = '1.4.0';
+    const VERSION  = '1.4.1';
     const REPO_URL = 'https://github.com/nebigoktug/torn-userscripts';
     const LS_KEY   = 'tpc_api_key';
     const LS_PREFS = 'tpc_prefs';
@@ -435,7 +435,13 @@
         overlay.querySelector('[data-act="key"]').addEventListener('click', () => renderKeySetup());
         const resetPos = overlay.querySelector('[data-act="resetpos"]');
         if (resetPos) resetPos.addEventListener('click', () => {
-            bannerResetPos(LS_BANNER_POS, document.getElementById('tpc-banner'));
+            // Rebuild it rather than just unpinning: Torn may have re-rendered
+            // the spot it was first placed in while it was floating.
+            bannerResetPos(LS_BANNER_POS, null);
+            const old = document.getElementById('tpc-banner');
+            if (old) old.remove();
+            bannerHidden = false;
+            updateBanner();
             resetPos.remove();
         });
         if (lsGet(LS_KEY)) renderMain(); else renderKeySetup();

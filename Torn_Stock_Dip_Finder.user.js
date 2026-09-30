@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Stock Dip Finder
 // @namespace    https://github.com/nebigoktug
-// @version      1.1.0
+// @version      1.1.1
 // @description  Swing-trading helper for Torn's stock market: shows which stock has dipped furthest below its recent average (a buy candidate), and for your open trades the target sell price and the "sell by" day. Rule backtested on ~5 years of daily prices. Display only: you buy and sell yourself.
 // @author       Nebigoktug
 // @license      MIT
@@ -45,7 +45,7 @@
     if (window.__tsdRunning) return;
     window.__tsdRunning = true;
 
-    const VERSION  = '1.1.0';
+    const VERSION  = '1.1.1';
     const REPO_URL = 'https://github.com/nebigoktug/torn-userscripts';
     const LS_KEY   = 'tsd_api_key';
     const LS_PREFS = 'tsd_prefs';
@@ -363,7 +363,12 @@
         overlay.querySelector('[data-act="key"]').addEventListener('click', () => renderKeySetup());
         const resetPos = overlay.querySelector('[data-act="resetpos"]');
         if (resetPos) resetPos.addEventListener('click', () => {
-            bannerResetPos(LS_BANNER_POS, document.getElementById('tsd-banner'));
+            // Rebuild it rather than just unpinning: Torn may have re-rendered
+            // the spot it was first placed in while it was floating.
+            bannerResetPos(LS_BANNER_POS, null);
+            const old = document.getElementById('tsd-banner');
+            if (old) old.remove();
+            updateBanner();
             resetPos.remove();
         });
         if (lsGet(LS_KEY)) renderMain(); else renderKeySetup();
