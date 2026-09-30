@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Stock Dip Finder
 // @namespace    https://github.com/nebigoktug
-// @version      1.0.2
+// @version      1.1.0
 // @description  Swing-trading helper for Torn's stock market: shows which stock has dipped furthest below its recent average (a buy candidate), and for your open trades the target sell price and the "sell by" day. Rule backtested on ~5 years of daily prices. Display only: you buy and sell yourself.
 // @author       Nebigoktug
 // @license      MIT
@@ -45,10 +45,11 @@
     if (window.__tsdRunning) return;
     window.__tsdRunning = true;
 
-    const VERSION  = '1.0.2';
+    const VERSION  = '1.1.0';
     const REPO_URL = 'https://github.com/nebigoktug/torn-userscripts';
     const LS_KEY   = 'tsd_api_key';
     const LS_PREFS = 'tsd_prefs';
+    const LS_BANNER_POS = 'tsd_banner_pos';
     const LS_HIST  = 'tsd_history';
     const OTHER_KEYS = ['ffbs_api_key', 'tfs_api_key', 'tpc_api_key']; // offered on first setup
     const FEE = 0.001;                 // Torn takes 0.1% of every sale
@@ -352,7 +353,7 @@
                 <div class="tsd-head"><h2>📉 Stock Dip Finder <span class="tsd-ver">v${VERSION}</span></h2></div>
                 <div class="tsd-body"></div>
                 <div class="tsd-foot">
-                    <span><a href="https://www.torn.com/page.php?sid=stocks">Stock Market</a> · <button class="tsd-linkbtn" data-act="key">Change API key</button></span>
+                    <span><a href="https://www.torn.com/page.php?sid=stocks">Stock Market</a> · <button class="tsd-linkbtn" data-act="key">Change API key</button>${bannerSavedPos(LS_BANNER_POS) ? `<span data-act="resetpos"> · <button class="tsd-linkbtn">Reset banner</button></span>` : ''}</span>
                     <a href="${REPO_URL}" target="_blank" rel="noopener">GitHub</a>
                 </div>
             </div>`;
@@ -360,6 +361,11 @@
         overlay.addEventListener('click', (e) => { if (e.target === overlay) closePanel(); });
         overlay.querySelector('.tsd-close').addEventListener('click', closePanel);
         overlay.querySelector('[data-act="key"]').addEventListener('click', () => renderKeySetup());
+        const resetPos = overlay.querySelector('[data-act="resetpos"]');
+        if (resetPos) resetPos.addEventListener('click', () => {
+            bannerResetPos(LS_BANNER_POS, document.getElementById('tsd-banner'));
+            resetPos.remove();
+        });
         if (lsGet(LS_KEY)) renderMain(); else renderKeySetup();
     }
 
@@ -491,6 +497,89 @@
         }
     }
 
+    // ------------------------------------------------------------ movable banner
+    // Tap opens the details. Press and hold (~0.35 s), then drag, to move the
+    // banner; a quick swipe over it still scrolls the page. The spot is saved
+    // per script; "Reset banner" in the panel puts it back in the page.
+    const BANNER_POS_PROPS = ['position', 'left', 'top', 'width', 'zIndex', 'margin', 'transform', 'boxShadow'];
+    function bannerPlace(el, pos) {
+        if (!pos) { BANNER_POS_PROPS.forEach((k) => { el.style[k] = ''; }); return; }
+        const w = Math.min(420, window.innerWidth - 16);
+        const h = Math.min(el.offsetHeight || 60, window.innerHeight - 16);
+        Object.assign(el.style, {
+            position: 'fixed', width: w + 'px', zIndex: '2147483645', margin: '0', transform: 'none',
+            left: Math.min(Math.max(8, pos.x), window.innerWidth - w - 8) + 'px',
+            top: Math.min(Math.max(8, pos.y), window.innerHeight - h - 8) + 'px',
+            boxShadow: '0 6px 20px rgba(0,0,0,.5)',
+        });
+    }
+    function bannerSavedPos(lsKey) { try { return JSON.parse(localStorage.getItem(lsKey) || 'null'); } catch (e) { return null; } }
+    function bannerResetPos(lsKey, el) {
+        try { localStorage.removeItem(lsKey); } catch (e) {}
+        if (el) bannerPlace(el, null);
+    }
+    function bannerMovable(el, lsKey, onTap) {
+        bannerPlace(el, bannerSavedPos(lsKey));
+        Object.assign(el.style, { userSelect: 'none', webkitUserSelect: 'none', webkitTouchCallout: 'none' });
+        let drag = null, holdTimer = null, t0 = null, suppressClick = false;
+        const start = (x, y) => {
+            const r = el.getBoundingClientRect();
+            drag = { dx: x - r.left, dy: y - r.top, moved: false };
+            bannerPlace(el, { x: r.left, y: r.top });
+            el.style.opacity = '.85';
+            try { if (navigator.vibrate) navigator.vibrate(15); } catch (e) {}
+        };
+        const move = (x, y) => { drag.moved = true; bannerPlace(el, { x: x - drag.dx, y: y - drag.dy }); };
+        const end = () => {
+            if (!drag) return;
+            el.style.opacity = '';
+            if (drag.moved) {
+                const r = el.getBoundingClientRect();
+                try { localStorage.setItem(lsKey, JSON.stringify({ x: Math.round(r.left), y: Math.round(r.top) })); } catch (e) {}
+            } else {
+                bannerPlace(el, bannerSavedPos(lsKey)); // held without moving: leave it where it was
+            }
+            drag = null;
+            suppressClick = true;
+            setTimeout(() => { suppressClick = false; }, 400);
+        };
+        el.addEventListener('touchstart', (e) => {
+            if (e.touches.length !== 1) return;
+            t0 = { x: e.touches[0].clientX, y: e.touches[0].clientY };
+            clearTimeout(holdTimer);
+            holdTimer = setTimeout(() => start(t0.x, t0.y), 350);
+        }, { passive: true });
+        el.addEventListener('touchmove', (e) => {
+            const t = e.touches[0];
+            if (drag) { e.preventDefault(); move(t.clientX, t.clientY); return; }
+            if (t0 && Math.hypot(t.clientX - t0.x, t.clientY - t0.y) > 8) clearTimeout(holdTimer); // it's a scroll
+        }, { passive: false });
+        const touchEnd = () => { clearTimeout(holdTimer); t0 = null; end(); };
+        el.addEventListener('touchend', touchEnd);
+        el.addEventListener('touchcancel', touchEnd);
+        // Mouse: just drag.
+        el.addEventListener('mousedown', (e) => {
+            if (e.button !== 0) return;
+            const sx = e.clientX, sy = e.clientY;
+            const mm = (ev) => {
+                if (!drag && Math.hypot(ev.clientX - sx, ev.clientY - sy) > 5) start(sx, sy);
+                if (drag) { ev.preventDefault(); move(ev.clientX, ev.clientY); }
+            };
+            const mu = () => { document.removeEventListener('mousemove', mm); document.removeEventListener('mouseup', mu); end(); };
+            document.addEventListener('mousemove', mm);
+            document.addEventListener('mouseup', mu);
+        });
+        el.addEventListener('contextmenu', (e) => e.preventDefault());
+        el.addEventListener('click', (e) => {
+            if (suppressClick) { e.stopPropagation(); return; }
+            onTap();
+        });
+        window.addEventListener('resize', () => {
+            const pos = bannerSavedPos(lsKey);
+            if (el.isConnected && pos) bannerPlace(el, pos);
+        });
+    }
+
     // ------------------------------------------------------------ stock market banner
     // On the Stock Market page: one line on what to do, tap for details.
     async function updateBanner() {
@@ -500,7 +589,7 @@
         if (!el) {
             el = document.createElement('div');
             el.id = 'tsd-banner';
-            el.addEventListener('click', openPanel);
+            bannerMovable(el, LS_BANNER_POS, openPanel);
             const title = document.querySelector('.content-title');
             if (title && title.parentNode) title.parentNode.insertBefore(el, title.nextSibling);
             else { el.classList.add('float'); (document.body || document.documentElement).appendChild(el); }

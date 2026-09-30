@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Pre-flight Checklist
 // @namespace    https://github.com/nebigoktug
-// @version      1.3.1
+// @version      1.4.0
 // @description  Before you fly: will your energy or nerve cap while you're away, will a drug / booster cooldown run out mid-flight, is your cash right for the trip, and is there a ranked war, chain or Organized Crime you'd miss. Checks against the real round-trip time for the destination and flight type you pick on the Travel Agency. Display only, no automation.
 // @author       Nebigoktug
 // @license      MIT
@@ -38,10 +38,11 @@
     if (window.__tpcRunning) return;
     window.__tpcRunning = true;
 
-    const VERSION  = '1.3.1';
+    const VERSION  = '1.4.0';
     const REPO_URL = 'https://github.com/nebigoktug/torn-userscripts';
     const LS_KEY   = 'tpc_api_key';
     const LS_PREFS = 'tpc_prefs';
+    const LS_BANNER_POS = 'tpc_banner_pos';
     const DATA_TTL_MS   = 60 * 1000;        // reuse API data for a minute
     const RATE_PAUSE_MS = 60 * 1000;
 
@@ -424,7 +425,7 @@
                 <div class="tpc-head"><h2>✈️ Pre-flight <span class="tpc-ver">v${VERSION}</span></h2></div>
                 <div class="tpc-body"></div>
                 <div class="tpc-foot">
-                    <span><a href="https://www.torn.com/page.php?sid=travel">Travel Agency</a> · <button class="tpc-linkbtn" data-act="key">Change API key</button></span>
+                    <span><a href="https://www.torn.com/page.php?sid=travel">Travel Agency</a> · <button class="tpc-linkbtn" data-act="key">Change API key</button>${bannerSavedPos(LS_BANNER_POS) ? `<span data-act="resetpos"> · <button class="tpc-linkbtn">Reset banner</button></span>` : ''}</span>
                     <a href="${REPO_URL}" target="_blank" rel="noopener">GitHub</a>
                 </div>
             </div>`;
@@ -432,6 +433,11 @@
         overlay.addEventListener('click', (e) => { if (e.target === overlay) closePanel(); });
         overlay.querySelector('.tpc-close').addEventListener('click', closePanel);
         overlay.querySelector('[data-act="key"]').addEventListener('click', () => renderKeySetup());
+        const resetPos = overlay.querySelector('[data-act="resetpos"]');
+        if (resetPos) resetPos.addEventListener('click', () => {
+            bannerResetPos(LS_BANNER_POS, document.getElementById('tpc-banner'));
+            resetPos.remove();
+        });
         if (lsGet(LS_KEY)) renderMain(); else renderKeySetup();
     }
 
@@ -585,6 +591,89 @@
     let pickedOnPage = false;
     let bannerHidden = false;    // removed because you're flying or abroad; don't re-add it
 
+    // ------------------------------------------------------------ movable banner
+    // Tap opens the details. Press and hold (~0.35 s), then drag, to move the
+    // banner; a quick swipe over it still scrolls the page. The spot is saved
+    // per script; "Reset banner" in the panel puts it back in the page.
+    const BANNER_POS_PROPS = ['position', 'left', 'top', 'width', 'zIndex', 'margin', 'transform', 'boxShadow'];
+    function bannerPlace(el, pos) {
+        if (!pos) { BANNER_POS_PROPS.forEach((k) => { el.style[k] = ''; }); return; }
+        const w = Math.min(420, window.innerWidth - 16);
+        const h = Math.min(el.offsetHeight || 60, window.innerHeight - 16);
+        Object.assign(el.style, {
+            position: 'fixed', width: w + 'px', zIndex: '2147483645', margin: '0', transform: 'none',
+            left: Math.min(Math.max(8, pos.x), window.innerWidth - w - 8) + 'px',
+            top: Math.min(Math.max(8, pos.y), window.innerHeight - h - 8) + 'px',
+            boxShadow: '0 6px 20px rgba(0,0,0,.5)',
+        });
+    }
+    function bannerSavedPos(lsKey) { try { return JSON.parse(localStorage.getItem(lsKey) || 'null'); } catch (e) { return null; } }
+    function bannerResetPos(lsKey, el) {
+        try { localStorage.removeItem(lsKey); } catch (e) {}
+        if (el) bannerPlace(el, null);
+    }
+    function bannerMovable(el, lsKey, onTap) {
+        bannerPlace(el, bannerSavedPos(lsKey));
+        Object.assign(el.style, { userSelect: 'none', webkitUserSelect: 'none', webkitTouchCallout: 'none' });
+        let drag = null, holdTimer = null, t0 = null, suppressClick = false;
+        const start = (x, y) => {
+            const r = el.getBoundingClientRect();
+            drag = { dx: x - r.left, dy: y - r.top, moved: false };
+            bannerPlace(el, { x: r.left, y: r.top });
+            el.style.opacity = '.85';
+            try { if (navigator.vibrate) navigator.vibrate(15); } catch (e) {}
+        };
+        const move = (x, y) => { drag.moved = true; bannerPlace(el, { x: x - drag.dx, y: y - drag.dy }); };
+        const end = () => {
+            if (!drag) return;
+            el.style.opacity = '';
+            if (drag.moved) {
+                const r = el.getBoundingClientRect();
+                try { localStorage.setItem(lsKey, JSON.stringify({ x: Math.round(r.left), y: Math.round(r.top) })); } catch (e) {}
+            } else {
+                bannerPlace(el, bannerSavedPos(lsKey)); // held without moving: leave it where it was
+            }
+            drag = null;
+            suppressClick = true;
+            setTimeout(() => { suppressClick = false; }, 400);
+        };
+        el.addEventListener('touchstart', (e) => {
+            if (e.touches.length !== 1) return;
+            t0 = { x: e.touches[0].clientX, y: e.touches[0].clientY };
+            clearTimeout(holdTimer);
+            holdTimer = setTimeout(() => start(t0.x, t0.y), 350);
+        }, { passive: true });
+        el.addEventListener('touchmove', (e) => {
+            const t = e.touches[0];
+            if (drag) { e.preventDefault(); move(t.clientX, t.clientY); return; }
+            if (t0 && Math.hypot(t.clientX - t0.x, t.clientY - t0.y) > 8) clearTimeout(holdTimer); // it's a scroll
+        }, { passive: false });
+        const touchEnd = () => { clearTimeout(holdTimer); t0 = null; end(); };
+        el.addEventListener('touchend', touchEnd);
+        el.addEventListener('touchcancel', touchEnd);
+        // Mouse: just drag.
+        el.addEventListener('mousedown', (e) => {
+            if (e.button !== 0) return;
+            const sx = e.clientX, sy = e.clientY;
+            const mm = (ev) => {
+                if (!drag && Math.hypot(ev.clientX - sx, ev.clientY - sy) > 5) start(sx, sy);
+                if (drag) { ev.preventDefault(); move(ev.clientX, ev.clientY); }
+            };
+            const mu = () => { document.removeEventListener('mousemove', mm); document.removeEventListener('mouseup', mu); end(); };
+            document.addEventListener('mousemove', mm);
+            document.addEventListener('mouseup', mu);
+        });
+        el.addEventListener('contextmenu', (e) => e.preventDefault());
+        el.addEventListener('click', (e) => {
+            if (suppressClick) { e.stopPropagation(); return; }
+            onTap();
+        });
+        window.addEventListener('resize', () => {
+            const pos = bannerSavedPos(lsKey);
+            if (el.isConnected && pos) bannerPlace(el, pos);
+        });
+    }
+
     // ------------------------------------------------------------ travel page banner
     // On the Travel Agency, a summary at the top listing any problems; tap it for details.
     const onTravelPage = () => /\/page\.php$/i.test(location.pathname) && /[?&]sid=travel\b/i.test(location.search);
@@ -596,7 +685,7 @@
         if (!el) {
             el = document.createElement('div');
             el.id = 'tpc-banner';
-            el.addEventListener('click', openPanel);
+            bannerMovable(el, LS_BANNER_POS, openPanel);
             // Right under Torn's page title if there is one, else floating.
             const title = document.querySelector('.content-title');
             if (title && title.parentNode) {
