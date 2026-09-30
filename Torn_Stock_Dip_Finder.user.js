@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Stock Dip Finder
 // @namespace    https://github.com/nebigoktug
-// @version      1.0.1
+// @version      1.0.2
 // @description  Swing-trading helper for Torn's stock market: shows which stock has dipped furthest below its recent average (a buy candidate), and for your open trades the target sell price and the "sell by" day. Rule backtested on ~5 years of daily prices. Display only: you buy and sell yourself.
 // @author       Nebigoktug
 // @license      MIT
@@ -45,7 +45,7 @@
     if (window.__tsdRunning) return;
     window.__tsdRunning = true;
 
-    const VERSION  = '1.0.1';
+    const VERSION  = '1.0.2';
     const REPO_URL = 'https://github.com/nebigoktug/torn-userscripts';
     const LS_KEY   = 'tsd_api_key';
     const LS_PREFS = 'tsd_prefs';
@@ -78,7 +78,10 @@
         return s + '$' + Math.round(a);
     };
     const price = (n) => '$' + Number(n).toFixed(2);
-    const pct = (x, digits = 1) => (x > 0 ? '+' : '') + (x * 100).toFixed(digits) + '%';
+    const pct = (x, digits = 1) => {
+        const t = Math.abs(x * 100).toFixed(digits);
+        return (Number(t) === 0 ? '' : x > 0 ? '+' : '-') + t + '%';
+    };
     const below = (dev) => (Math.abs(dev) * 100).toFixed(2) + '%';
     const DAY = 86400;
     const now = () => Math.floor(Date.now() / 1000);
@@ -202,7 +205,9 @@
         }).filter(Boolean).sort((a, b) => a.dev - b.dev);
     }
 
-    // Open dip trades: recent purchases (long-term holdings and ignored stocks left out).
+    // Open dip trades: recent purchases (long-term holdings and ignored stocks
+    // left out), one per stock. Several buys of the same stock are merged:
+    // total shares, average price, sell-by counted from the first buy.
     function trades(data) {
         if (!data.mine) return [];
         const bySym = new Map(data.stocks.map((s) => [s.id, s]));
@@ -210,17 +215,18 @@
         data.mine.forEach((m) => {
             const s = bySym.get(m.id);
             if (!s || prefs.ignore.includes(s.sym)) return;
-            (m.transactions || []).forEach((tx) => {
-                const age = (now() - Number(tx.timestamp)) / DAY;
-                if (age > LONG_TERM_DAYS) return;
-                const bought = Number(tx.price), shares = Number(tx.shares);
-                const target = bought * (1 + prefs.targetPct / 100);
-                const sellBy = Number(tx.timestamp) + prefs.maxDays * DAY;
-                const net = shares * s.price * (1 - FEE) - shares * bought;
-                const hit = s.price >= target, late = now() >= sellBy;
-                out.push({ s, bought, shares, target, sellBy, age, net, change: s.price / bought - 1, hit, late,
-                    blocks: m.bonus && m.bonus.increment > 0 });
-            });
+            const recent = (m.transactions || []).filter((tx) => (now() - Number(tx.timestamp)) / DAY <= LONG_TERM_DAYS);
+            if (!recent.length) return;
+            const shares = recent.reduce((a, tx) => a + Number(tx.shares), 0);
+            if (!(shares > 0)) return;
+            const bought = recent.reduce((a, tx) => a + Number(tx.shares) * Number(tx.price), 0) / shares;
+            const first = Math.min(...recent.map((tx) => Number(tx.timestamp)));
+            const target = bought * (1 + prefs.targetPct / 100);
+            const sellBy = first + prefs.maxDays * DAY;
+            const net = shares * s.price * (1 - FEE) - shares * bought;
+            const hit = s.price >= target, late = now() >= sellBy;
+            out.push({ s, bought, shares, target, sellBy, net, change: s.price / bought - 1, hit, late, buys: recent.length,
+                blocks: m.bonus && m.bonus.increment > 0 });
         });
         return out.sort((a, b) => (b.hit || b.late) - (a.hit || a.late) || a.sellBy - b.sellBy);
     }
@@ -441,8 +447,8 @@
                 const v = tradeVerdict(t);
                 return `<div class="tsd-trade ${v.cls}">
                     <button class="tsd-linkbtn tsd-ign" data-ignore="${esc(t.s.sym)}" title="Treat as a long-term holding">not a dip trade</button>
-                    <b>${esc(t.s.sym)}</b> · ${t.shares.toLocaleString()} shares at ${price(t.bought)} · now ${price(t.s.price)}
-                    (<span class="${t.change >= 0 ? 'pos' : 'neg'}">${pct(t.change, 2)}</span>, ${money(t.net)} after fee)
+                    <b>${esc(t.s.sym)}</b> · ${t.shares.toLocaleString()} shares at ${price(t.bought)}${t.buys > 1 ? ` (avg of ${t.buys} buys)` : ''} · now ${price(t.s.price)}
+                    (<span class="${Math.abs(t.change) < 5e-5 ? '' : t.change > 0 ? 'pos' : 'neg'}">${pct(t.change, 2)}</span>, ${money(t.net)} after fee)
                     <div class="v">${v.icon} ${esc(v.text)}</div>
                     ${t.blocks ? '<div class="tsd-note" style="margin-top:2px">This stock pays you a benefit: selling below the block size stops it.</div>' : ''}
                 </div>`;
