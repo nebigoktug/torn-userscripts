@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Museum Set Helper
 // @namespace    https://github.com/nebigoktug
-// @version      3.2.0
+// @version      3.2.1
 // @description  Every museum set in one panel: flowers, plushies and artifacts (coins, arrowheads, sculptures, Companion Scripts, Senet, amulet…). Counts what you own, shows complete sets and what's missing for a target, where flowers and plushies are sold abroad, what the missing items cost on the item market and in player bazaars (via weav3r.dev), and the profit of exchanging sets for points. Display only, no automation.
 // @author       Nebigoktug
 // @license      MIT
@@ -45,7 +45,7 @@
     if (window.__tfsRunning) return;
     window.__tfsRunning = true;
 
-    const VERSION  = '3.2.0';
+    const VERSION  = '3.2.1';
     const REPO_URL = 'https://github.com/nebigoktug/torn-userscripts';
     const LS_KEY   = 'tfs_api_key';             // same key as the old Flower Set Helper
     const LS_PREFS = 'tfs_prefs';
@@ -59,7 +59,7 @@
     const INV_MIN_AGE_MS = 60 * 1000;       // Refresh refetches the inventory at most once a minute
     const RATE_PAUSE_MS  = 60 * 1000;       // no API calls for this long after "too many requests"
     const REQUEST_GAP_MS = 250;             // spacing between market requests
-    const BAZAAR_GAP_MS  = 700;             // weav3r's limit is shared by every user of it
+    const BAZAAR_GAP_MS  = 300;             // weav3r's limit (~100/min) is shared by every user of it
     const BAZAAR_STALE_MS = 30 * 60 * 1000; // bazaar listings not re-checked for this long may be sold
     const MUSEUM_DAY_BONUS = 1.1;           // Museum Day: 10% more points
 
@@ -652,14 +652,13 @@
                     if (!r.f.id) { r.cheapest = null; r.cost = 0; r.setCost = null; continue; }
                     const cached = priceCache()[r.f.id];
                     const wasCached = cached && Date.now() - cached.ts < priceTtl;
-                    const market = await fetchListings(r.f.id, key, priceTtl);
-                    let listings = market;
-                    let bzCached = true;
-                    if (prefs.bazaars) {
-                        const bz = await fetchBazaar(r.f.id, priceTtl);
-                        bzCached = bz.cached;
-                        if (bz.listings.length) listings = market.concat(bz.listings).sort((a, b) => a.price - b.price);
-                    }
+                    // Item market and bazaars are asked at the same time.
+                    const [market, bz] = await Promise.all([
+                        fetchListings(r.f.id, key, priceTtl),
+                        prefs.bazaars ? fetchBazaar(r.f.id, priceTtl) : Promise.resolve({ listings: [], cached: true }),
+                    ]);
+                    const bzCached = bz.cached;
+                    const listings = bz.listings.length ? market.concat(bz.listings).sort((a, b) => a.price - b.price) : market;
                     if (token !== refreshToken) return;
                     const c = costFor(listings, r.missing);
                     r.cheapest = c.cheapest;
@@ -678,8 +677,7 @@
                     fullPartial = fullPartial || one.partial;
                     if (token !== refreshToken) return;
                     renderTable(out, rows, sets, ctx, { total, partial, saved });
-                    if (!bzCached) await sleep(BAZAAR_GAP_MS);
-                    else if (!wasCached) await sleep(REQUEST_GAP_MS);
+                    if (!wasCached || !bzCached) await sleep(Math.max(REQUEST_GAP_MS, bzCached ? 0 : BAZAAR_GAP_MS));
                 }
                 // Points side of the trade: what a set is worth at the museum.
                 const pointPrice = await fetchPointPrice(key, priceTtl);
