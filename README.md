@@ -9,6 +9,7 @@ Torn City userscripts.
 | [Torn Museum Set Helper](Torn_Museum_Set_Helper.user.js) | Every museum set: flowers, plushies and artifacts. Counts what you own, complete sets and what's missing for a target, where flowers and plushies are sold abroad, market cost of the missing items and the points profit (Museum Day aware). Replaces the Flower Set Helper. |
 | [Torn Flower Set Helper](Torn_Flower_Set_Helper.user.js) | Superseded by the Museum Set Helper. |
 | [Torn Pre-flight Checklist](Torn_Preflight_Checklist.user.js) | Before you fly: will energy/nerve cap while you're away, will drug/booster cooldowns run out mid-trip, is your cash right (ticket, shopping budget, mug risk), and is there a ranked war, chain or OC you'd miss. Uses the real round trip for your destination and flight type; a summary banner on the Travel Agency. |
+| [Torn Stock Dip Finder](Torn_Stock_Dip_Finder.user.js) | Swing-trading helper for the stock market: the stock furthest below its 7-day average (buy candidate), and for your open trades the +2% target and 14-day sell-by date. Rule backtested on ~5 years of daily prices (tornsy.com). Suggestions only; you trade yourself. |
 | [Torn Shoplifting Assistant](shoplifting-assistant.user.js) | Shoplifting helper. |
 | [Torn Panel Boilerplate](Torn_Panel_Boilerplate.user.js) | Reusable panel boilerplate for new scripts. |
 
