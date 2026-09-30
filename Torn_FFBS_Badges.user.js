@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn FF/BS Badges
 // @namespace    https://github.com/tornffbs
-// @version      2.7.2
+// @version      2.8.0
 // @description  FairFight + estimated battle-stat badges next to player names (via FFScouter), live hospital/travel timers, a sort/filter bar on faction and war member lists, and a don't-attack list (war terms, allies, your own faction) with an attack-page warning, with an in-page settings panel. Needs a Torn API key registered with FFScouter. Works on Torn PDA and desktop userscript managers.
 // @author       Nebigoktug
 // @license      MIT
@@ -36,7 +36,7 @@
     /* =======================================================================
      * CONFIG DEFAULTS  — user-overridable ones live in SETTINGS (⚙ panel)
      * ===================================================================== */
-    const VERSION        = '2.7.2';           // keep in sync with @version
+    const VERSION        = '2.8.0';           // keep in sync with @version
     const REPO_URL       = 'https://github.com/nebigoktug/torn-userscripts';
     const LS_KEY         = 'ffbs_api_key';    // where the key is stored locally
     const LS_SETTINGS    = 'ffbs_settings';   // where the ⚙ panel settings live
@@ -707,19 +707,6 @@
             background: var(--ffbs-accent); color: var(--ffbs-accent-fg); border: none; border-radius: 18px; cursor: pointer;
             box-shadow: 0 3px 12px var(--ffbs-shadow); font-family: Arial, Helvetica, sans-serif;
         }
-
-        /* ---- settings gear ---- */
-        #ffbs-gear {
-            position: fixed; right: 12px; bottom: 110px; z-index: 2147483646;
-            width: 38px; height: 38px; padding: 0; font-size: 18px; line-height: 38px;
-            text-align: center; background: var(--ffbs-bg); color: var(--ffbs-accent);
-            border: 1px solid var(--ffbs-border); border-radius: 50%; cursor: pointer;
-            box-shadow: 0 3px 12px var(--ffbs-shadow); font-family: Arial, Helvetica, sans-serif;
-        }
-        #ffbs-gear:hover { border-color: var(--ffbs-accent); }
-        /* ⚙ inside Torn's footer button row: keeps Torn's button class, own colour */
-        [data-ffbs-gear] { background: linear-gradient(to bottom, #2ecc40, #1a7a26) !important; }
-        [data-ffbs-gear]:hover { background: linear-gradient(to bottom, #3ee052, #2ecc40) !important; }
 
         /* ---- settings panel ---- */
         #ffbs-config .ffbs-card {
@@ -1532,7 +1519,7 @@
     }
     // Our own UI nodes; mutations that only add these are ignored so badge
     // updates can't trigger a rescan loop.
-    const OWN_NODES = '.ffbs-badge, .ffbs-toolbar, #ffbs-setup, #ffbs-config, #ffbs-gear, [data-ffbs-gear], #ffbs-reopen, #ffbs-styles, #ffbs-attack-warn';
+    const OWN_NODES = '.ffbs-badge, .ffbs-toolbar, #ffbs-setup, #ffbs-config, [data-nth-hub], #nth-hub-float, #nth-hub-menu, #nth-hub-styles, [data-hub-item], #ffbs-reopen, #ffbs-styles, #ffbs-attack-warn';
     // Only new player links need a full scan. Torn adds nodes all the time
     // (chat, timers, ads); for those we just make sure the ⚙ button is still
     // there and notice SPA navigation. Scanning on every one of them made
@@ -1724,41 +1711,129 @@
     // Hunter's icon) when they exist; otherwise fall back to the floating
     // button. Called on every scan, so it re-mounts after Torn's SPA
     // re-renders the footer.
-    function showGearButton() {
-        const ref = findFooterRefBtn();
-        const inBar = document.querySelector('[data-ffbs-gear]');
-        const floating = document.getElementById('ffbs-gear');
-        if (ref && ref.parentNode) {
-            if (inBar && inBar.parentNode === ref.parentNode) { if (floating) floating.remove(); return; }
-            if (inBar) inBar.remove();
-            const svg = ref.querySelector('svg');
-            const svgCls = (svg && svg.className && svg.className.baseVal) || '';
+    /* =======================================================================
+     * SHARED FOOTER BUTTON  (nth-hub v1 — keep this block identical in every
+     * script). All of these scripts share one button in Torn's footer row.
+     * With one script installed it opens that script straight away; with
+     * more it opens a small menu. The page DOM is the only shared state, so
+     * it also works when the script manager sandboxes each script.
+     * ===================================================================== */
+    const HUB_GRID_SVG = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24">' +
+        '<g fill="#fff"><rect x="3" y="3" width="7.5" height="7.5" rx="1.5"/><rect x="13.5" y="3" width="7.5" height="7.5" rx="1.5"/>' +
+        '<rect x="3" y="13.5" width="7.5" height="7.5" rx="1.5"/><rect x="13.5" y="13.5" width="7.5" height="7.5" rx="1.5"/></g></svg>';
+    const HUB_MANY_BG = 'linear-gradient(to bottom, #6b6b6b, #3a3a3a)';
+    function hubStyles() {
+        if (document.getElementById('nth-hub-styles')) return;
+        const st = document.createElement('style');
+        st.id = 'nth-hub-styles';
+        st.textContent = `
+            #nth-hub-float {
+                position: fixed; right: 12px; bottom: 110px; z-index: 2147483646; width: 38px; height: 38px;
+                border-radius: 50%; border: 1px solid rgba(255,255,255,.25); padding: 0; cursor: pointer;
+                display: flex; align-items: center; justify-content: center; box-shadow: 0 3px 12px rgba(0,0,0,.35);
+            }
+            #nth-hub-float svg { width: 22px; height: 22px; }
+            #nth-hub-menu {
+                position: fixed; z-index: 2147483646; display: none; flex-direction: column; gap: 2px;
+                min-width: 190px; padding: 4px; background: #1f1f1f; border: 1px solid #444; border-radius: 8px;
+                box-shadow: 0 6px 20px rgba(0,0,0,.45); font: 13px Arial, Helvetica, sans-serif;
+            }
+            #nth-hub-menu.nth-open { display: flex; }
+            #nth-hub-menu button {
+                display: flex; align-items: center; gap: 10px; width: 100%; padding: 7px 8px; margin: 0;
+                background: transparent; border: 0; border-radius: 6px; color: #eee; font: inherit;
+                text-align: left; cursor: pointer;
+            }
+            #nth-hub-menu button:hover, #nth-hub-menu button:active { background: #333; }
+            #nth-hub-menu i {
+                display: flex; align-items: center; justify-content: center; flex: none;
+                width: 28px; height: 28px; border-radius: 6px;
+            }
+            #nth-hub-menu i svg { width: 18px; height: 18px; }
+        `;
+        (document.head || document.documentElement).appendChild(st);
+    }
+    function hubMenu() {
+        let menu = document.getElementById('nth-hub-menu');
+        if (menu) return menu;
+        menu = document.createElement('div');
+        menu.id = 'nth-hub-menu';
+        (document.body || document.documentElement).appendChild(menu);
+        document.addEventListener('click', (e) => {
+            const m = document.getElementById('nth-hub-menu');
+            if (m && m.classList.contains('nth-open') && !m.contains(e.target)) m.classList.remove('nth-open');
+        });
+        return menu;
+    }
+    function hubToggle(hub) {
+        const menu = hubMenu();
+        const items = menu.querySelectorAll('[data-hub-item]');
+        if (items.length === 1) { items[0].click(); return; }
+        if (menu.classList.contains('nth-open')) { menu.classList.remove('nth-open'); return; }
+        const r = hub.getBoundingClientRect();
+        menu.style.right = Math.max(8, window.innerWidth - r.right) + 'px';
+        menu.style.bottom = Math.max(8, window.innerHeight - r.top + 6) + 'px';
+        menu.classList.add('nth-open');
+    }
+    // One item looks like that script's own button; two or more show a grid.
+    function hubPaint(hub, ref) {
+        const items = hubMenu().querySelectorAll('[data-hub-item]');
+        const one = items.length === 1 ? items[0] : null;
+        const state = one ? 'one:' + one.getAttribute('data-hub-item') : 'many:' + items.length;
+        if (hub.getAttribute('data-hub-state') === state) return;
+        hub.setAttribute('data-hub-state', state);
+        hub.title = one ? one.textContent : 'Scripts';
+        hub.innerHTML = one ? one.querySelector('i').innerHTML : HUB_GRID_SVG;
+        const svg = hub.querySelector('svg');
+        const refSvg = ref && ref.querySelector('svg');
+        const cls = (refSvg && refSvg.className && refSvg.className.baseVal) || '';
+        if (svg && cls && hub.id !== 'nth-hub-float') svg.setAttribute('class', cls);
+        hub.style.setProperty('background', one ? one.getAttribute('data-hub-bg') : HUB_MANY_BG, 'important');
+    }
+    // item: { id, label, svg (markup), bg (CSS background), onOpen }
+    function hubMount(item) {
+        if (!document.body) return;
+        hubStyles();
+        const menu = hubMenu();
+        if (!menu.querySelector(`[data-hub-item="${item.id}"]`)) {
             const b = document.createElement('button');
             b.type = 'button';
-            b.className = ref.className;
-            b.title = 'FF/BS Badges settings';
-            b.setAttribute('data-ffbs-gear', '');
-            b.innerHTML = GEAR_SVG.replace('%CLS%', svgCls ? ` class="${svgCls}"` : '');
+            b.setAttribute('data-hub-item', item.id);
+            b.setAttribute('data-hub-bg', item.bg);
+            b.innerHTML = `<i>${item.svg.replace('%CLS%', '')}</i><span></span>`;
+            b.querySelector('i').style.background = item.bg;
+            b.querySelector('span').textContent = item.label;
             b.addEventListener('click', (e) => {
                 e.preventDefault();
                 e.stopPropagation();
-                showConfigPanel();
+                menu.classList.remove('nth-open');
+                item.onOpen();
             });
-            try {
-                ref.parentNode.insertBefore(b, ref);
-                if (floating) floating.remove();
-                return;
-            } catch (e) { b.remove(); }
-        } else if (inBar) {
-            inBar.remove();
+            menu.appendChild(b);
         }
-        if (floating) return;
-        const f = document.createElement('button');
-        f.id = 'ffbs-gear';
-        f.textContent = '⚙';
-        f.title = 'FF/BS Badges settings';
-        f.addEventListener('click', showConfigPanel);
-        (document.body || document.documentElement).appendChild(f);
+        const ref = document.getElementById('notes_panel_button') || document.getElementById('people_panel_button');
+        let hub = document.querySelector('[data-nth-hub]');
+        const inBar = !!(ref && ref.parentNode);
+        if (hub && (inBar ? hub.parentNode === ref.parentNode : hub.id === 'nth-hub-float')) { hubPaint(hub, ref); return; }
+        if (hub) hub.remove();
+        hub = document.createElement('button');
+        hub.type = 'button';
+        hub.setAttribute('data-nth-hub', '');
+        hub.addEventListener('click', (e) => { e.preventDefault(); e.stopPropagation(); hubToggle(hub); });
+        let placed = false;
+        if (inBar) {
+            hub.className = ref.className;
+            try { ref.parentNode.insertBefore(hub, ref); placed = true; } catch (e) { /* fall back to floating */ }
+        }
+        if (!placed) {
+            hub.id = 'nth-hub-float';
+            document.body.appendChild(hub);
+        }
+        hubPaint(hub, ref);
+    }
+    function showGearButton() {
+        hubMount({ id: 'ffbs', label: 'FF/BS Badges', svg: GEAR_SVG,
+            bg: 'linear-gradient(to bottom, #2ecc40, #1a7a26)', onOpen: showConfigPanel });
     }
     function cacheSummary() {
         let kb = 0;

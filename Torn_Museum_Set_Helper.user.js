@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Museum Set Helper
 // @namespace    https://github.com/nebigoktug
-// @version      3.0.2
+// @version      3.1.0
 // @description  Every museum set in one panel: flowers, plushies and artifacts (coins, arrowheads, sculptures, Companion Scripts, Senet, amulet…). Counts what you own, shows complete sets and what's missing for a target, where flowers and plushies are sold abroad, what the missing items cost on the item market, and the profit of exchanging sets for points. Display only, no automation.
 // @author       Nebigoktug
 // @license      MIT
@@ -45,7 +45,7 @@
     if (window.__tfsRunning) return;
     window.__tfsRunning = true;
 
-    const VERSION  = '3.0.2';
+    const VERSION  = '3.1.0';
     const REPO_URL = 'https://github.com/nebigoktug/torn-userscripts';
     const LS_KEY   = 'tfs_api_key';             // same key as the old Flower Set Helper
     const LS_PREFS = 'tfs_prefs';
@@ -293,14 +293,6 @@
             --tfs-bg: #fff; --tfs-bg2: #f1f3f5; --tfs-fg: #15181b; --tfs-muted: #454c55;
             --tfs-border: #d0d5db; --tfs-hover: #e7eaee; --tfs-accent: #c83e87; --tfs-accent-fg: #fff;
             --tfs-good: #1f9a30; --tfs-bad: #d93025; --tfs-link: #1a73e8; --tfs-shadow: rgba(0,0,0,0.25);
-        }
-        [data-tfs-btn] { background: linear-gradient(to bottom, #e05aa0, #9c2d68) !important; }
-        [data-tfs-btn]:hover { background: linear-gradient(to bottom, #ef78b6, #e05aa0) !important; }
-        #tfs-float {
-            position: fixed; right: 12px; bottom: 156px; z-index: 2147483646; width: 38px; height: 38px;
-            border-radius: 50%; border: 1px solid var(--tfs-border); background: var(--tfs-bg);
-            font-size: 19px; line-height: 38px; text-align: center; cursor: pointer; padding: 0;
-            box-shadow: 0 3px 12px var(--tfs-shadow);
         }
         @keyframes tfs-fade { from { opacity: 0; } to { opacity: 1; } }
         @keyframes tfs-pop  { from { opacity: 0; transform: translateY(8px) scale(.97); } to { opacity: 1; transform: none; } }
@@ -911,33 +903,129 @@
         '<rect x="10.7" y="10" width="2.6" height="7.5" rx=".4"/><rect x="16.4" y="10" width="2.6" height="7.5" rx=".4"/>' +
         '<rect x="3" y="18.6" width="18" height="2.4" rx=".4"/></g></svg>';
 
-    function mountButton() {
-        const ref = document.getElementById('notes_panel_button') || document.getElementById('people_panel_button');
-        const inBar = document.querySelector('[data-tfs-btn]');
-        const floating = document.getElementById('tfs-float');
-        if (ref && ref.parentNode) {
-            if (inBar && inBar.parentNode === ref.parentNode) { if (floating) floating.remove(); return; }
-            if (inBar) inBar.remove();
-            const svg = ref.querySelector('svg');
-            const cls = (svg && svg.className && svg.className.baseVal) || '';
+    /* =======================================================================
+     * SHARED FOOTER BUTTON  (nth-hub v1 — keep this block identical in every
+     * script). All of these scripts share one button in Torn's footer row.
+     * With one script installed it opens that script straight away; with
+     * more it opens a small menu. The page DOM is the only shared state, so
+     * it also works when the script manager sandboxes each script.
+     * ===================================================================== */
+    const HUB_GRID_SVG = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24">' +
+        '<g fill="#fff"><rect x="3" y="3" width="7.5" height="7.5" rx="1.5"/><rect x="13.5" y="3" width="7.5" height="7.5" rx="1.5"/>' +
+        '<rect x="3" y="13.5" width="7.5" height="7.5" rx="1.5"/><rect x="13.5" y="13.5" width="7.5" height="7.5" rx="1.5"/></g></svg>';
+    const HUB_MANY_BG = 'linear-gradient(to bottom, #6b6b6b, #3a3a3a)';
+    function hubStyles() {
+        if (document.getElementById('nth-hub-styles')) return;
+        const st = document.createElement('style');
+        st.id = 'nth-hub-styles';
+        st.textContent = `
+            #nth-hub-float {
+                position: fixed; right: 12px; bottom: 110px; z-index: 2147483646; width: 38px; height: 38px;
+                border-radius: 50%; border: 1px solid rgba(255,255,255,.25); padding: 0; cursor: pointer;
+                display: flex; align-items: center; justify-content: center; box-shadow: 0 3px 12px rgba(0,0,0,.35);
+            }
+            #nth-hub-float svg { width: 22px; height: 22px; }
+            #nth-hub-menu {
+                position: fixed; z-index: 2147483646; display: none; flex-direction: column; gap: 2px;
+                min-width: 190px; padding: 4px; background: #1f1f1f; border: 1px solid #444; border-radius: 8px;
+                box-shadow: 0 6px 20px rgba(0,0,0,.45); font: 13px Arial, Helvetica, sans-serif;
+            }
+            #nth-hub-menu.nth-open { display: flex; }
+            #nth-hub-menu button {
+                display: flex; align-items: center; gap: 10px; width: 100%; padding: 7px 8px; margin: 0;
+                background: transparent; border: 0; border-radius: 6px; color: #eee; font: inherit;
+                text-align: left; cursor: pointer;
+            }
+            #nth-hub-menu button:hover, #nth-hub-menu button:active { background: #333; }
+            #nth-hub-menu i {
+                display: flex; align-items: center; justify-content: center; flex: none;
+                width: 28px; height: 28px; border-radius: 6px;
+            }
+            #nth-hub-menu i svg { width: 18px; height: 18px; }
+        `;
+        (document.head || document.documentElement).appendChild(st);
+    }
+    function hubMenu() {
+        let menu = document.getElementById('nth-hub-menu');
+        if (menu) return menu;
+        menu = document.createElement('div');
+        menu.id = 'nth-hub-menu';
+        (document.body || document.documentElement).appendChild(menu);
+        document.addEventListener('click', (e) => {
+            const m = document.getElementById('nth-hub-menu');
+            if (m && m.classList.contains('nth-open') && !m.contains(e.target)) m.classList.remove('nth-open');
+        });
+        return menu;
+    }
+    function hubToggle(hub) {
+        const menu = hubMenu();
+        const items = menu.querySelectorAll('[data-hub-item]');
+        if (items.length === 1) { items[0].click(); return; }
+        if (menu.classList.contains('nth-open')) { menu.classList.remove('nth-open'); return; }
+        const r = hub.getBoundingClientRect();
+        menu.style.right = Math.max(8, window.innerWidth - r.right) + 'px';
+        menu.style.bottom = Math.max(8, window.innerHeight - r.top + 6) + 'px';
+        menu.classList.add('nth-open');
+    }
+    // One item looks like that script's own button; two or more show a grid.
+    function hubPaint(hub, ref) {
+        const items = hubMenu().querySelectorAll('[data-hub-item]');
+        const one = items.length === 1 ? items[0] : null;
+        const state = one ? 'one:' + one.getAttribute('data-hub-item') : 'many:' + items.length;
+        if (hub.getAttribute('data-hub-state') === state) return;
+        hub.setAttribute('data-hub-state', state);
+        hub.title = one ? one.textContent : 'Scripts';
+        hub.innerHTML = one ? one.querySelector('i').innerHTML : HUB_GRID_SVG;
+        const svg = hub.querySelector('svg');
+        const refSvg = ref && ref.querySelector('svg');
+        const cls = (refSvg && refSvg.className && refSvg.className.baseVal) || '';
+        if (svg && cls && hub.id !== 'nth-hub-float') svg.setAttribute('class', cls);
+        hub.style.setProperty('background', one ? one.getAttribute('data-hub-bg') : HUB_MANY_BG, 'important');
+    }
+    // item: { id, label, svg (markup), bg (CSS background), onOpen }
+    function hubMount(item) {
+        if (!document.body) return;
+        hubStyles();
+        const menu = hubMenu();
+        if (!menu.querySelector(`[data-hub-item="${item.id}"]`)) {
             const b = document.createElement('button');
             b.type = 'button';
-            b.className = ref.className;
-            b.title = 'Museum sets';
-            b.setAttribute('data-tfs-btn', '');
-            b.innerHTML = MUSEUM_SVG.replace('%CLS%', cls ? ` class="${cls}"` : '');
-            b.addEventListener('click', (e) => { e.preventDefault(); e.stopPropagation(); openPanel(); });
-            try { ref.parentNode.insertBefore(b, ref); if (floating) floating.remove(); return; } catch (e) { b.remove(); }
-        } else if (inBar) {
-            inBar.remove();
+            b.setAttribute('data-hub-item', item.id);
+            b.setAttribute('data-hub-bg', item.bg);
+            b.innerHTML = `<i>${item.svg.replace('%CLS%', '')}</i><span></span>`;
+            b.querySelector('i').style.background = item.bg;
+            b.querySelector('span').textContent = item.label;
+            b.addEventListener('click', (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                menu.classList.remove('nth-open');
+                item.onOpen();
+            });
+            menu.appendChild(b);
         }
-        if (floating) return;
-        const f = document.createElement('button');
-        f.id = 'tfs-float';
-        f.title = 'Museum sets';
-        f.textContent = '🏛️';
-        f.addEventListener('click', openPanel);
-        (document.body || document.documentElement).appendChild(f);
+        const ref = document.getElementById('notes_panel_button') || document.getElementById('people_panel_button');
+        let hub = document.querySelector('[data-nth-hub]');
+        const inBar = !!(ref && ref.parentNode);
+        if (hub && (inBar ? hub.parentNode === ref.parentNode : hub.id === 'nth-hub-float')) { hubPaint(hub, ref); return; }
+        if (hub) hub.remove();
+        hub = document.createElement('button');
+        hub.type = 'button';
+        hub.setAttribute('data-nth-hub', '');
+        hub.addEventListener('click', (e) => { e.preventDefault(); e.stopPropagation(); hubToggle(hub); });
+        let placed = false;
+        if (inBar) {
+            hub.className = ref.className;
+            try { ref.parentNode.insertBefore(hub, ref); placed = true; } catch (e) { /* fall back to floating */ }
+        }
+        if (!placed) {
+            hub.id = 'nth-hub-float';
+            document.body.appendChild(hub);
+        }
+        hubPaint(hub, ref);
+    }
+    function mountButton() {
+        hubMount({ id: 'tfs', label: 'Museum sets', svg: MUSEUM_SVG,
+            bg: 'linear-gradient(to bottom, #e05aa0, #9c2d68)', onOpen: openPanel });
     }
 
     hookItemsPage();   // installed right away so no tab load is missed
@@ -957,9 +1045,7 @@
             pending = true;
             setTimeout(() => {
                 pending = false;
-                const ref = document.getElementById('notes_panel_button') || document.getElementById('people_panel_button');
-                const ok = ref ? !!document.querySelector('[data-tfs-btn]') : !!document.getElementById('tfs-float');
-                if (!ok) mountButton();
+                mountButton();   // cheap no-op while the button is in place
             }, 300);
         }).observe(document.body, { childList: true, subtree: true });
         document.addEventListener('visibilitychange', () => { if (!document.hidden) mountButton(); });
