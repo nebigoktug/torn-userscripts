@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Chat Panel
 // @namespace    https://github.com/nebigoktug
-// @version      0.2.0
+// @version      0.3.0
 // @description  A full-screen messenger-style view of Torn's Chat 3.1: one list of all your chats with last message, time, unread count and online dot, and a bubble view per chat. Torn's own chat does the work underneath: messages are read from what Torn already loads, and sending types into Torn's own message box.
 // @author       Nebigoktug
 // @license      MIT
@@ -44,7 +44,7 @@
     if (window.__twcRunning) return;
     window.__twcRunning = true;
 
-    const VERSION  = '0.2.0';
+    const VERSION  = '0.3.0';
     const REPO_URL = 'https://github.com/nebigoktug/torn-userscripts';
     const LS_CONVS = 'twc_convs';      // chat list (names, last message) for a quick start
     const LS_ME    = 'twc_me';
@@ -53,6 +53,7 @@
     const LS_EMOJI_RECENT = 'twc_emoji_recent';
     const DEFAULT_MAX_LEN = 840;                // Torn wiki: chat messages are capped at 840 characters
     const ROOM_ICONS = { faction: '🛡️', company: '🏢', global: '🌐', trade: '🔁' };
+    const ROOM_COLORS = { faction: '#1f7a4d', company: '#5b6b7a', global: '#1f6fb2', trade: '#c46a1b' };
 
     // ------------------------------------------------------------ state
     const convs = new Map();   // key "room:faction" / "dm:123" -> conversation
@@ -65,7 +66,7 @@
     function lsSet(k, v) { try { localStorage.setItem(k, v); } catch (e) {} }
     try {
         (JSON.parse(lsGet(LS_CONVS) || '[]') || []).forEach((c) => {
-            if (!c || !c.key) return;
+            if (!c || !c.key || /:(undefined|null)?$/.test(c.key)) return;
             // v0.1.0/0.1.1 saved previews still HTML-encoded.
             if (c.last && /&(#\d+|#x[0-9a-f]+|quot|amp|lt|gt|apos);/i.test(c.last.content || '')) c.last.content = decode(c.last.content);
             convs.set(c.key, Object.assign(c, { stale: true }));
@@ -92,8 +93,10 @@
         if (!b) { b = { list: [], ids: new Set(), hasOlder: true }; msgs.set(key, b); }
         return b;
     }
-    function learnMe(uid) {
+    let myName = lsGet(LS_ME + '_name') || '';
+    function learnMe(uid, name) {
         if (uid && uid !== myId) { myId = uid; lsSet(LS_ME, String(uid)); }
+        if (uid && uid === myId && name && name !== myName) { myName = name; lsSet(LS_ME + '_name', name); }
     }
     function addMessages(key, items, opts) {
         const b = box(key);
@@ -102,8 +105,12 @@
             if (!m || !m.messageId || b.ids.has(m.messageId)) return;
             clean(m);
             // Our own pending bubble: replace it with the real one.
-            const pi = b.list.findIndex((x) => x.pending && x.content === m.content && isMine(key, m));
-            if (pi >= 0) b.list.splice(pi, 1);
+            const pi = b.list.findIndex((x) => (x.pending || x.sentOk) && x.content === m.content &&
+                Math.abs((m.createdAt || 0) - x.createdAt) < 120000);
+            if (pi >= 0) {
+                b.list.splice(pi, 1);
+                if (m.sender) learnMe(m.sender.userId, m.sender.name);
+            }
             b.ids.add(m.messageId);
             b.list.push(m);
             countEmojis(key, m);
@@ -186,6 +193,25 @@
         if (d.lastMessage && (!c.last || (d.lastMessage.createdAt || 0) >= (c.last.createdAt || 0))) c.last = slim(d.lastMessage);
         if (d.lastMessage && d.lastMessage.sender && d.lastMessage.sender.userId !== u.userId) learnMe(d.lastMessage.sender.userId);
     }
+    // Which chat a live message belongs to. Room events name the room; private
+    // messages come without an id, so they go by sender, or for our own echo
+    // by the bubble waiting for it.
+    let lastSentKey = null;
+    function keyForEvent(rawId, m) {
+        const id = rawId == null ? '' : String(rawId);
+        if (id && id !== 'undefined' && (convs.has(roomKey(id)) || ROOM_ICONS[id] || !/^\d+$/.test(id))) return roomKey(id);
+        if (id && /^\d+$/.test(id)) return dmKey(id);
+        const waiting = pendingKeyFor(m);
+        if (waiting) return waiting;
+        const sid = m.sender && m.sender.userId;
+        if (sid && sid !== myId) return dmKey(sid);
+        return lastSentKey && lastSentKey.startsWith('dm:') ? lastSentKey : null;
+    }
+    function pendingKeyFor(m) {
+        for (const [key, b] of msgs) if (b.list.some((x) => x.pending && x.content === m.content)) return key;
+        return null;
+    }
+
     // Live events from the chat WebSocket (Centrifugo, JSON, one reply per line).
     function onSocketText(text) {
         String(text).split('\n').forEach((line) => {
@@ -198,13 +224,14 @@
             if (!acts) return;
             const got = acts.onMessageReceived;
             if (got && got.message) {
-                const id = String(got.id);
                 const m = clean(got.message);
-                const key = convs.has(roomKey(id)) || ROOM_ICONS[id] ? roomKey(id) : dmKey(id);
+                const key = keyForEvent(got.id, m);
+                if (!key) return;
+                const id = key.slice(key.indexOf(':') + 1);
                 if (key.startsWith('dm:')) {
                     const c = conv(key, { type: 'dm', id });
                     if (m.sender && String(m.sender.userId) === id) { c.name = c.name || m.sender.name; c.avatar = c.avatar || m.sender.avatar; }
-                    else if (m.sender) learnMe(m.sender.userId);
+                    else if (m.sender) learnMe(m.sender.userId, m.sender.name);
                 } else conv(key, { type: 'room', id });
                 addMessages(key, [m]);
                 const c = convs.get(key);
@@ -472,7 +499,10 @@
 
     // ------------------------------------------------------------ formatting
     const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-    const linkify = (s) => esc(s).replace(/\bhttps?:\/\/[^\s<]+/g, (u) => `<a href="${u}" target="_blank" rel="noopener">${u}</a>`).replace(/\n/g, '<br>');
+    const linkify = (s) => esc(s)
+        .replace(/\bhttps?:\/\/[^\s<]+/g, (u) => `<a href="${u}" target="_blank" rel="noopener">${u.replace(/^https?:\/\/(www\.)?/, '').replace(/^(.{42}).+$/, '$1…')}</a>`)
+        .replace(/(^|[\s(])@([A-Za-z0-9_-]{2,20})/g, (a, pre, n) => `${pre}<b class="twc-at">@${n}</b>`)
+        .replace(/\n/g, '<br>');
     const pad = (n) => String(n).padStart(2, '0');
     const tct = (ms) => { const d = new Date(ms); return pad(d.getUTCHours()) + ':' + pad(d.getUTCMinutes()); };
     const dayKey = (ms) => new Date(ms).toISOString().slice(0, 10);
@@ -493,7 +523,7 @@
     const NAME_COLORS = ['#e5786d', '#5fb0e8', '#f0a64b', '#7dcf8a', '#c690e8', '#e8c95f', '#5fd1c4', '#e88fb5'];
     const nameColor = (uid) => NAME_COLORS[Math.abs(Number(uid) || 0) % NAME_COLORS.length];
     function avatarHtml(c) {
-        if (c.type === 'room') return `<span class="twc-av twc-room">${ROOM_ICONS[c.id] || '💬'}</span>`;
+        if (c.type === 'room') return `<span class="twc-av twc-room" style="background:${ROOM_COLORS[c.id] || '#54656f'} !important">${ROOM_ICONS[c.id] || '💬'}</span>`;
         const dot = c.online && /online/i.test(c.online) ? '<i class="twc-dot on"></i>' : c.online && /idle/i.test(c.online) ? '<i class="twc-dot idle"></i>' : '';
         return `<span class="twc-av">${c.avatar ? `<img src="${esc(c.avatar)}" alt="" loading="lazy">` : esc((c.name || '?').slice(0, 1))}${dot}</span>`;
     }
@@ -508,9 +538,9 @@
         st.id = 'twc-styles';
         st.textContent = `
         #twc-root { --bg: #0b141a; --panel: #111b21; --head: #202c33; --fg: #e9edef; --muted: #8696a0; --line: #222d34;
-            --mine: #005c4b; --theirs: #202c33; --accent: #00a884; --badge: #00a884; --input: #2a3942; --link: #53bdeb; }
+            --mine: #005c4b; --theirs: #202c33; --accent: #00a884; --badge: #00a884; --input: #2a3942; --link: #53bdeb; --dots: rgba(255,255,255,.035); }
         body:not(.dark-mode) #twc-root { --bg: #efeae2; --panel: #fff; --head: #f0f2f5; --fg: #111b21; --muted: #667781; --line: #e9edef;
-            --mine: #d9fdd3; --theirs: #fff; --accent: #008069; --badge: #25d366; --input: #fff; --link: #027eb5; }
+            --mine: #d9fdd3; --theirs: #fff; --accent: #008069; --badge: #25d366; --input: #fff; --link: #027eb5; --dots: rgba(0,0,0,.05); }
         #twc-root { position: fixed; inset: 0; z-index: 2147483640; display: flex; background: var(--bg); color: var(--fg);
             font: 15px/1.35 -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
         #twc-root * { box-sizing: border-box; }
@@ -553,19 +583,44 @@
         #twc-root .twc-ctitle b { display: block; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
         #twc-root .twc-ctitle small { display: block; font-size: 12.5px; color: var(--muted); }
         #twc-root .twc-ctitle a { color: inherit; text-decoration: none; }
-        #twc-root .twc-msgs { flex: 1; overflow-y: auto; padding: 8px 6% 10px; display: flex; flex-direction: column; gap: 2px; }
-        #twc-root .twc-day { align-self: center; margin: 10px 0 6px; padding: 5px 12px; border-radius: 8px; background: var(--head); font-size: 12.5px; color: var(--muted); }
+        #twc-root .twc-msgwrap { position: relative; flex: 1; min-height: 0; display: flex; }
+        #twc-root .twc-msgs { flex: 1; overflow-y: auto; padding: 8px 4% 10px; display: flex; flex-direction: column; gap: 2px;
+            background-color: var(--bg); background-image: radial-gradient(var(--dots) 1px, transparent 1.2px), radial-gradient(var(--dots) 1px, transparent 1.2px);
+            background-size: 26px 26px; background-position: 0 0, 13px 13px; overscroll-behavior: contain; }
+        #twc-root .twc-day { position: sticky; top: 2px; z-index: 2; align-self: center; margin: 10px 0 6px; }
+        #twc-root .twc-day span { display: inline-block; padding: 5px 12px; border-radius: 8px; background: var(--head); font-size: 12.5px; color: var(--muted);
+            box-shadow: 0 1px .5px rgba(0,0,0,.13); }
+        #twc-root .twc-down { position: absolute; right: 14px; bottom: 12px; width: 42px; height: 42px; border-radius: 50%; border: 0; cursor: pointer;
+            background: var(--head); color: var(--muted) !important; font-size: 22px; line-height: 30px; box-shadow: 0 2px 6px rgba(0,0,0,.3); }
+        #twc-root .twc-down b { position: absolute; top: -6px; right: -4px; min-width: 20px; height: 20px; padding: 0 5px; border-radius: 10px;
+            background: var(--badge); color: #fff !important; font-size: 11px; line-height: 20px; }
         #twc-root .twc-older { align-self: center; margin: 6px 0; font-size: 12.5px; color: var(--muted); }
         #twc-root .twc-b { position: relative; max-width: min(78%, 560px); padding: 6px 8px 7px; border-radius: 8px; background: var(--theirs);
             align-self: flex-start; box-shadow: 0 1px .5px rgba(0,0,0,.13); overflow-wrap: anywhere; margin-top: 1px; }
         #twc-root .twc-b.first { margin-top: 8px; border-top-left-radius: 0; }
+        /* Tail on the first bubble of a group, like WhatsApp. */
+        #twc-root .twc-b.first::before { content: ''; position: absolute; top: 0; left: -8px; width: 0; height: 0; border-style: solid;
+            border-width: 0 8px 10px 0; border-color: transparent var(--theirs) transparent transparent; }
         #twc-root .twc-b.mine { align-self: flex-end; background: var(--mine); }
         #twc-root .twc-b.mine.first { border-top-left-radius: 8px; border-top-right-radius: 0; }
-        #twc-root .twc-b .twc-from { display: block; font-size: 13px; font-weight: 600; margin-bottom: 1px; }
+        #twc-root .twc-b.mine.first::before { left: auto; right: -8px; border-width: 0 0 10px 8px; border-color: transparent transparent transparent var(--mine); }
+        #twc-root .twc-b.indent { margin-left: 36px; }
+        #twc-root .twc-sav { position: absolute; left: -44px; top: 0; width: 30px; height: 30px; border-radius: 50%; overflow: hidden; background: var(--head);
+            display: flex; align-items: center; justify-content: center; font-size: 13px; font-weight: 600; color: var(--muted) !important; text-decoration: none; }
+        #twc-root .twc-sav img { width: 100%; height: 100%; object-fit: cover; }
+        #twc-root .twc-b .twc-from { display: block; font-size: 13px; font-weight: 600; margin-bottom: 1px; text-decoration: none; }
+        #twc-root .twc-b.jumbo { background: transparent !important; box-shadow: none; padding: 0 2px; }
+        #twc-root .twc-b.jumbo::before { display: none; }
+        #twc-root .twc-b.jumbo .twc-txt { font-size: 42px; line-height: 1.15; }
+        #twc-root .twc-b.jumbo .twc-meta { float: none; display: block; text-align: right; margin: 0; padding: 1px 6px; border-radius: 8px; background: var(--head); width: fit-content; margin-left: auto; }
+        #twc-root .twc-b.mention { box-shadow: inset 3px 0 0 var(--accent), 0 1px .5px rgba(0,0,0,.13); }
+        #twc-root .twc-at { color: var(--link) !important; font-weight: 600; }
+        #twc-root .twc-tick { font-style: normal; margin-left: 3px; color: var(--link) !important; }
+        #twc-root .twc-tick.bad { color: #e5534b !important; font-weight: 700; }
         #twc-root .twc-b .twc-txt { font-size: 14.5px; }
         #twc-root .twc-b .twc-txt a { color: var(--link) !important; }
         #twc-root .twc-b .twc-meta { float: right; margin: 6px 0 -4px 10px; font-size: 11px; color: var(--muted); white-space: nowrap; }
-        #twc-root .twc-b.pending .twc-meta::after { content: ' 🕓'; }
+
         #twc-root .twc-b.failed { outline: 1px solid #e5534b; }
         #twc-root .twc-compose { display: flex; align-items: flex-end; gap: 8px; padding: 8px 10px; background: var(--head); flex: none; }
         #twc-root .twc-compose textarea { flex: 1; resize: none; max-height: 120px; min-height: 40px; padding: 10px 12px; border-radius: 20px; border: 0;
@@ -690,7 +745,8 @@
                 <div class="twc-ctitle"></div>
                 <button class="twc-ib" data-a="close2" title="Close">✕</button>
             </div>
-            <div class="twc-msgs"></div>
+            <div class="twc-msgwrap"><div class="twc-msgs"></div>
+                <button type="button" class="twc-down" hidden title="Newest messages"><b hidden></b>⌄</button></div>
             <div class="twc-err" hidden></div>
             <div class="twc-emoji" hidden><div class="twc-etabs"></div><div class="twc-egrid"></div></div>
             <div class="twc-compose">
@@ -722,7 +778,9 @@
         });
         conv.querySelector('.twc-send').addEventListener('click', doSend);
         const box_ = conv.querySelector('.twc-msgs');
-        box_.addEventListener('scroll', () => { if (box_.scrollTop < 60) loadOlder(); }, { passive: true });
+        box_.addEventListener('scroll', () => { if (box_.scrollTop < 60) loadOlder(); paintDown(); }, { passive: true });
+        conv.querySelector('.twc-down').addEventListener('click', () => { box_.scrollTo({ top: box_.scrollHeight, behavior: 'smooth' }); newBelow = 0; });
+        newBelow = 0; shownCount = 0;
         c.unread = 0;
         paintHeader();
         renderMessages(false, true);
@@ -770,23 +828,54 @@
         let html = `<div class="twc-older">${olderPending ? 'Loading older messages…' : ''}</div>`;
         if (!b.list.length) html += `<div class="twc-empty">${b.loaded ? 'No messages yet.' : 'Loading messages…'}</div>`;
         else if (!b.loaded) html += '<div class="twc-older">Loading earlier messages…</div>';
-        let lastDay = '', lastSender = null;
+        let lastDay = '', lastSender = null, lastAt = 0;
+        const room = c.type === 'room';
         b.list.forEach((m) => {
-            const d = dayKey(m.createdAt || Date.now());
-            if (d !== lastDay) { html += `<div class="twc-day">${dayLabel(m.createdAt || Date.now())}</div>`; lastDay = d; lastSender = null; }
+            const at = m.createdAt || Date.now();
+            const d = dayKey(at);
+            if (d !== lastDay) { html += `<div class="twc-day"><span>${dayLabel(at)}</span></div>`; lastDay = d; lastSender = null; }
             const mine = isMine(c.key, m);
             const uid = m.sender && m.sender.userId;
-            const first = uid !== lastSender;
+            // A new group starts with another sender or after a 5-minute gap.
+            const first = uid !== lastSender || at - lastAt > 5 * 60000;
             lastSender = uid;
-            const from = c.type === 'room' && !mine && first && m.sender
-                ? `<span class="twc-from" style="color:${nameColor(uid)} !important">${esc(m.sender.name)}</span>` : '';
-            html += `<div class="twc-b${mine ? ' mine' : ''}${first ? ' first' : ''}${m.pending ? ' pending' : ''}${m.failed ? ' failed' : ''}">${from}` +
-                `<span class="twc-txt">${linkify(m.content)}</span><span class="twc-meta">${m.createdAt ? tct(m.createdAt) : ''}</span></div>`;
+            lastAt = at;
+            const jumbo = isJumbo(m.content);
+            const from = room && !mine && first && m.sender
+                ? `<a class="twc-from" href="/profiles.php?XID=${encodeURIComponent(uid)}" style="color:${nameColor(uid)} !important">${esc(m.sender.name)}</a>` : '';
+            const av = room && !mine && first && m.sender
+                ? `<a class="twc-sav" href="/profiles.php?XID=${encodeURIComponent(uid)}">${m.sender.avatar ? `<img src="${esc(m.sender.avatar)}" alt="" loading="lazy">` : esc(String(m.sender.name || '?').slice(0, 1))}</a>` : '';
+            const tick = mine ? (m.pending ? '<i class="twc-tick">🕓</i>' : m.failed ? '<i class="twc-tick bad">!</i>' : '<i class="twc-tick">✓</i>') : '';
+            const cls = ['twc-b', mine ? 'mine' : '', first ? 'first' : '', room && !mine ? 'indent' : '', jumbo ? 'jumbo' : '',
+                m.pending ? 'pending' : '', m.failed ? 'failed' : '', !mine && mentionsMe(m.content) ? 'mention' : ''].filter(Boolean).join(' ');
+            html += `<div class="${cls}">${av}${from}<span class="twc-txt">${linkify(m.content)}</span>` +
+                `<span class="twc-meta">${m.createdAt ? tct(m.createdAt) : ''}${tick}</span></div>`;
         });
         el.innerHTML = html;
         if (keepTop) el.scrollTop = el.scrollHeight - oldHeight + oldTop;
-        else if (stick === true ? true : nearBottom) el.scrollTop = el.scrollHeight;
+        else if (stick === true ? true : nearBottom) { el.scrollTop = el.scrollHeight; newBelow = 0; }
+        else if (!keepTop && b.list.length > shownCount) newBelow += b.list.length - shownCount;
+        shownCount = b.list.length;
+        paintDown();
     }
+    let newBelow = 0, shownCount = 0;
+    function paintDown() {
+        const el = root && root.querySelector('.twc-msgs');
+        const btn = root && root.querySelector('.twc-down');
+        if (!el || !btn) return;
+        const away = el.scrollHeight - el.scrollTop - el.clientHeight > 200;
+        if (!away) newBelow = 0;
+        btn.hidden = !away;
+        btn.querySelector('b').textContent = newBelow ? String(newBelow) : '';
+        btn.querySelector('b').hidden = !newBelow;
+    }
+    const isJumbo = (t) => {
+        const s = String(t || '').trim();
+        if (!s || s.length > 40) return false;
+        const found = s.match(EMOJI_RE);
+        return !!found && found.length <= 3 && !s.replace(EMOJI_RE, '').replace(/[\s\uFE0F\u200D]/g, '');
+    };
+    const mentionsMe = (t) => !!myName && new RegExp('@' + myName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\b', 'i').test(String(t || ''));
 
     let sending = false;
     async function doSend() {
@@ -801,6 +890,7 @@
         btn.disabled = true;
         const pick = root.querySelector('.twc-emoji');
         if (pick) pick.hidden = true;
+        lastSentKey = c.key;
         const pending = { messageId: 'pending-' + Date.now(), content: text, createdAt: Date.now(), pending: true,
             sender: myId ? { userId: myId } : null };
         const b = box(c.key);
@@ -818,7 +908,7 @@
             if (root && !ta.value) { ta.value = text; ta.dispatchEvent(new Event('input')); }
         } else {
             // Torn took it; the real message replaces this bubble when it comes back.
-            setTimeout(() => { if (pending.pending) { pending.pending = false; if (currentKey === c.key) renderMessages(); } }, 8000);
+            setTimeout(() => { if (pending.pending) { pending.pending = false; pending.sentOk = true; if (currentKey === c.key) renderMessages(); } }, 8000);
         }
         if (currentKey === c.key) renderMessages(false, true);
     }
