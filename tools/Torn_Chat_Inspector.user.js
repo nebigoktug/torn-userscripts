@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Chat Inspector (dev tool)
 // @namespace    https://github.com/nebigoktug
-// @version      0.1.0
+// @version      0.2.0
 // @description  Developer tool: records how Torn's chat is built (page structure) and what its live messages look like, with all message text and names removed, so a chat reskin can be written against it. Makes no requests; nothing leaves your device unless you copy or save the report yourself.
 // @author       Nebigoktug
 // @license      MIT
@@ -31,7 +31,7 @@
     if (window.__tciRunning) return;
     window.__tciRunning = true;
 
-    const VERSION = '0.1.0';
+    const VERSION = '0.2.0';
     const MAX_SAMPLES = 3;          // kept per distinct message shape
     const MAX_SHAPES = 300;
     const CHAT_URL_RE = /chat|sendbird|message|socket|ws\b|pusher|centrifug/i;
@@ -50,7 +50,7 @@
         switch (typeof v) {
             case 'object': {
                 const o = {};
-                Object.keys(v).slice(0, 60).forEach((k) => { o[k] = redact(v[k], k, depth + 1); });
+                Object.keys(v).slice(0, 60).forEach((k, i) => { o[/^\d{3,}$/.test(k) ? `<id ${i + 1}>` : k] = redact(v[k], k, depth + 1); });
                 return o;
             }
             case 'string':
@@ -75,7 +75,7 @@
     function parseFrame(data) {
         if (typeof data !== 'string') {
             const n = data && (data.byteLength != null ? data.byteLength : data.size);
-            return { kind: 'binary', note: `binary(${n || '?'} bytes)` };
+            return { kind: 'binary', note: `binary(${n || '?'} bytes)` };   // Centrifugo protobuf; text redaction can't apply
         }
         const m = data.match(/^(\d*)([[{][\s\S]*)$/);
         if (m) { try { return { kind: 'json', prefix: m[1], json: JSON.parse(m[2]) }; } catch (e) {} }
@@ -98,21 +98,28 @@
         paintCounts();
     }
 
-    const NativeWS = window.WebSocket;
-    if (NativeWS) {
-        const Wrapped = function (url, protocols) {
-            const ws = protocols !== undefined ? new NativeWS(url, protocols) : new NativeWS(url);
-            const entry = { url: cleanUrl(url), opened: new Date().toISOString(), frames: 0 };
-            rec.sockets.push(entry);
-            const ch = 'ws#' + rec.sockets.length;
-            ws.addEventListener('message', (e) => { entry.frames++; try { note(ch, 'in', e.data); } catch (err) {} });
-            const send = ws.send;
-            ws.send = function (data) { try { note(ch, 'out', data); } catch (err) {} return send.apply(this, arguments); };
-            return ws;
+    // WebSocket.prototype.send is patched instead of replacing the
+    // WebSocket class: 0.2.0 replaced the class and Torn's chat then never
+    // connected. A socket is picked up the first time Torn sends on it
+    // (Centrifugo always starts with a connect command).
+    const WSP = window.WebSocket && window.WebSocket.prototype;
+    if (WSP && WSP.send) {
+        const nativeSend = WSP.send;
+        const seen = new WeakSet();
+        WSP.send = function (data) {
+            try {
+                if (!seen.has(this)) {
+                    seen.add(this);
+                    const entry = { url: cleanUrl(this.url), opened: new Date().toISOString(), frames: 0 };
+                    rec.sockets.push(entry);
+                    const ch = 'ws#' + rec.sockets.length;
+                    this.__tciCh = ch;
+                    this.addEventListener('message', (e) => { entry.frames++; try { note(ch, 'in', e.data); } catch (err) {} });
+                }
+                note(this.__tciCh, 'out', data);
+            } catch (err) { /* never break Torn's socket */ }
+            return nativeSend.apply(this, arguments);
         };
-        Wrapped.prototype = NativeWS.prototype;
-        ['CONNECTING', 'OPEN', 'CLOSING', 'CLOSED'].forEach((k) => { Wrapped[k] = NativeWS[k]; });
-        window.WebSocket = Wrapped;
     }
 
     function noteHttp(method, url, body, text) {
@@ -165,6 +172,7 @@
         clone.querySelectorAll('*').forEach((el) => {
             if (/^(script|style|svg)$/i.test(el.tagName)) { el.innerHTML = el.tagName.toLowerCase() === 'svg' ? '' : '[…]'; }
             Array.from(el.attributes).forEach((a) => {
+                if (a.name === 'id' && /^\d+$/.test(a.value)) { el.setAttribute('id', '[user id]'); return; }
                 if (KEEP_ATTR_RE.test(a.name)) return;
                 if (a.name === 'href' || a.name === 'src') el.setAttribute(a.name, a.value.replace(/^(https?:\/\/[^/]+)?([^?#]*).*/, '$2').replace(/\d+/g, '9'));
                 else el.setAttribute(a.name, `[${a.value.length}]`);
