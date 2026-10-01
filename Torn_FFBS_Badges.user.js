@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn FF/BS Badges
 // @namespace    https://github.com/tornffbs
-// @version      2.8.0
+// @version      2.8.1
 // @description  FairFight + estimated battle-stat badges next to player names (via FFScouter), live hospital/travel timers, a sort/filter bar on faction and war member lists, and a don't-attack list (war terms, allies, your own faction) with an attack-page warning, with an in-page settings panel. Needs a Torn API key registered with FFScouter. Works on Torn PDA and desktop userscript managers.
 // @author       Nebigoktug
 // @license      MIT
@@ -36,7 +36,7 @@
     /* =======================================================================
      * CONFIG DEFAULTS  — user-overridable ones live in SETTINGS (⚙ panel)
      * ===================================================================== */
-    const VERSION        = '2.8.0';           // keep in sync with @version
+    const VERSION        = '2.8.1';           // keep in sync with @version
     const REPO_URL       = 'https://github.com/nebigoktug/torn-userscripts';
     const LS_KEY         = 'ffbs_api_key';    // where the key is stored locally
     const LS_SETTINGS    = 'ffbs_settings';   // where the ⚙ panel settings live
@@ -615,6 +615,13 @@
             line-height: 1; padding: 0 2px; cursor: pointer; }
         [data-ffbs-nohit] { background-color: rgba(255,65,54,0.18) !important;
             box-shadow: inset 3px 0 0 #ff4136 !important; }
+        /* Abroad "People" list: on phones the name cell is much wider than the honor bar
+           and each row clips what sticks out (34px high, overflow hidden), so the corner
+           badges sit just inside the cell's corners instead of outside them. */
+        .travel-people .users-list a.user.name > .ffbs-ff { top: 1px !important; right: 2px !important; bottom: auto !important; }
+        .travel-people .users-list a.user.name > .ffbs-bs { bottom: 1px !important; right: 2px !important; top: auto !important; }
+        .travel-people .users-list a.user.name > .ffbs-timer { top: 1px !important; left: 2px !important; }
+        .travel-people .users-list a.user.name > .ffbs-nohit { bottom: 1px !important; left: 2px !important; }
         .ffbs-timer-hosp   { border-color: #ff4136; background-color: rgba(255,65,54,0.6); }
         .ffbs-timer-travel { border-color: #39a0ff; background-color: rgba(57,160,255,0.6); }
 
