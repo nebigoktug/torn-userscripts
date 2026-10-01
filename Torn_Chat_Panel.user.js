@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Chat Panel
 // @namespace    https://github.com/nebigoktug
-// @version      0.1.2
+// @version      0.2.0
 // @description  A full-screen messenger-style view of Torn's Chat 3.1: one list of all your chats with last message, time, unread count and online dot, and a bubble view per chat. Torn's own chat does the work underneath: messages are read from what Torn already loads, and sending types into Torn's own message box.
 // @author       Nebigoktug
 // @license      MIT
@@ -44,10 +44,14 @@
     if (window.__twcRunning) return;
     window.__twcRunning = true;
 
-    const VERSION  = '0.1.2';
+    const VERSION  = '0.2.0';
     const REPO_URL = 'https://github.com/nebigoktug/torn-userscripts';
     const LS_CONVS = 'twc_convs';      // chat list (names, last message) for a quick start
     const LS_ME    = 'twc_me';
+    const LS_EMOJI_SEEN = 'twc_emoji_seen';     // emoji -> how often it appeared in your chats
+    const LS_EMOJI_UPTO = 'twc_emoji_upto';     // chat -> newest message already counted
+    const LS_EMOJI_RECENT = 'twc_emoji_recent';
+    const DEFAULT_MAX_LEN = 840;                // Torn wiki: chat messages are capped at 840 characters
     const ROOM_ICONS = { faction: '🛡️', company: '🏢', global: '🌐', trade: '🔁' };
 
     // ------------------------------------------------------------ state
@@ -102,6 +106,7 @@
             if (pi >= 0) b.list.splice(pi, 1);
             b.ids.add(m.messageId);
             b.list.push(m);
+            countEmojis(key, m);
             added++;
         });
         if (opts && 'hasOlder' in opts) { b.hasOlder = !!opts.hasOlder; b.loaded = true; }
@@ -381,6 +386,90 @@
         return cleared === null && ta.value !== '' ? 'Torn did not send it — check Torn\'s chat window.' : '';
     }
 
+    // ------------------------------------------------------------ emojis
+    // Torn's chat uses ordinary Unicode emojis (no custom set, no picker of
+    // its own). "Chats" shows the ones people actually use in your chats,
+    // counted from the messages Torn loads; each message is counted once.
+    const EMOJI_RE = /\p{Extended_Pictographic}(?:\uFE0F|\u20E3)?[\u{1F3FB}-\u{1F3FF}]?(?:\u200D\p{Extended_Pictographic}\uFE0F?[\u{1F3FB}-\u{1F3FF}]?)*|[\u{1F1E6}-\u{1F1FF}]{2}/gu;
+    const loadJson = (k, d) => { try { return JSON.parse(lsGet(k) || 'null') || d; } catch (e) { return d; } };
+    const emojiSeen = loadJson(LS_EMOJI_SEEN, {});
+    const emojiUpto = loadJson(LS_EMOJI_UPTO, {});
+    let emojiRecent = loadJson(LS_EMOJI_RECENT, []);
+    let emojiSaveTimer = null;
+    function countEmojis(key, m) {
+        if (!m || m.pending || !m.createdAt || m.createdAt <= (emojiUpto[key] || 0)) return;
+        const found = String(m.content || '').match(EMOJI_RE);
+        if (found) found.forEach((e) => { emojiSeen[e] = (emojiSeen[e] || 0) + 1; });
+        emojiUpto[key] = Math.max(emojiUpto[key] || 0, m.createdAt);
+        clearTimeout(emojiSaveTimer);
+        emojiSaveTimer = setTimeout(() => {
+            const keep = Object.entries(emojiSeen).sort((a, b) => b[1] - a[1]).slice(0, 200);
+            Object.keys(emojiSeen).forEach((k) => delete emojiSeen[k]);
+            keep.forEach(([k, v]) => { emojiSeen[k] = v; });
+            lsSet(LS_EMOJI_SEEN, JSON.stringify(emojiSeen));
+            lsSet(LS_EMOJI_UPTO, JSON.stringify(emojiUpto));
+        }, 2000);
+    }
+    const sp = (s) => s.split(' ');
+    const EMOJI_SETS = [
+        { id: 'recent', icon: '🕘', title: 'Recent', list: () => emojiRecent },
+        { id: 'chats', icon: '💬', title: 'Most used in your chats',
+            list: () => Object.entries(emojiSeen).sort((a, b) => b[1] - a[1]).slice(0, 48).map(([e]) => e) },
+        { id: 'torn', icon: '🏙️', title: 'Torn', list: () => sp('💰 💵 💸 🤑 💎 🏦 📈 📉 🌸 🌺 🌷 🌹 🧸 🐼 📦 🛍️ ✈️ 🏝️ 🧳 💊 💉 🍺 🍬 🍫 🥤 🔫 🗡️ ⚔️ 🛡️ 💣 🎯 👊 💪 🔥 ⚡ ✨ 💀 ☠️ 🏴‍☠️ 🏥 🚔 ⛓️ 🎰 🎲 🃏 🏆 🥇 🤝 🫡 👀 💤 ⏰ 🕵️') },
+        { id: 'smileys', icon: '😀', title: 'Smileys', list: () => sp('😀 😃 😄 😁 😆 😅 😂 🤣 🥲 😊 😇 🙂 🙃 😉 😌 😍 🥰 😘 😋 😛 😜 🤪 😝 🤑 🤗 🤭 🤫 🤔 🫡 🤐 🤨 😐 😑 😶 😏 😒 🙄 😬 😮‍💨 🤥 😴 🤤 😪 😷 🤒 🤕 🤢 🤮 🥵 🥶 🥴 😵 🤯 🤠 🥳 😎 🤓 🧐 😕 😟 🙁 😮 😯 😲 😳 🥺 😦 😧 😨 😰 😥 😢 😭 😱 😖 😣 😞 😓 😩 😫 🥱 😤 😡 😠 🤬 😈 👿 💀 🤡 👻 👽 🤖 💩') },
+        { id: 'hands', icon: '👍', title: 'People & hands', list: () => sp('👍 👎 👌 🤌 ✌️ 🤞 🤟 🤘 🤙 👈 👉 👆 👇 ☝️ ✋ 🤚 🖐️ 👋 👏 🙌 👐 🤲 🙏 🤝 💪 🫶 ✍️ 💅 🤳 👀 🧠 🫂 🤷 🤦 🙋 🙅 🙆 💁 🙇 🕺 💃 🏃 🚶') },
+        { id: 'hearts', icon: '❤️', title: 'Hearts & symbols', list: () => sp('❤️ 🧡 💛 💚 💙 💜 🖤 🤍 🤎 💔 ❣️ 💕 💞 💓 💗 💖 💘 💝 ✅ ❌ ❗ ❓ ‼️ ⁉️ 💯 💢 💥 💫 💦 💨 🕳️ 💬 💭 🗯️ ⭐ 🌟 ⚠️ 🚫 ⛔ 🔞 🆗 🆒 🆕 🆘 ➕ ➖ ➡️ ⬅️ ⬆️ ⬇️ 🔝 🔴 🟢 🔵 🟡 ⚫ ⚪') },
+        { id: 'nature', icon: '🐶', title: 'Animals & nature', list: () => sp('🐶 🐱 🐭 🐹 🐰 🦊 🐻 🐼 🐨 🐯 🦁 🐮 🐷 🐸 🐵 🙈 🙉 🙊 🐔 🐧 🐦 🦆 🦅 🦉 🐺 🐗 🐴 🦄 🐝 🐛 🦋 🐌 🐞 🐢 🐍 🦎 🐙 🦑 🦀 🐠 🐬 🐳 🦈 🐊 🐘 🦒 🐪 🌵 🌲 🌴 🍀 🍁 🌻 🌼 💐 🌈 ☀️ 🌙 ⭐ ☁️ ⛈️ ❄️ 🌊') },
+        { id: 'food', icon: '🍔', title: 'Food & things', list: () => sp('🍏 🍎 🍌 🍉 🍇 🍓 🍒 🍑 🍍 🥑 🌶️ 🍞 🧀 🥓 🍔 🍟 🍕 🌭 🌮 🍣 🍜 🍰 🎂 🧁 🍩 🍪 🍿 ☕ 🍵 🍷 🍸 🍹 🥃 🍻 🥂 🍾 🎉 🎊 🎁 🎈 🎮 🎧 🎵 📱 💻 📷 🔑 🔒 💡 📌 📎 ✂️ 🚗 🏍️ 🚀 🏠 🏰 🗽 🌍 🇬🇧 🇺🇸 🇹🇷') },
+    ];
+    let emojiTab = null;
+    function emojiPicker(conv, ta) {
+        const pick = conv.querySelector('.twc-emoji');
+        const tabs = pick.querySelector('.twc-etabs');
+        const grid = pick.querySelector('.twc-egrid');
+        const paint = () => {
+            const set = EMOJI_SETS.find((x) => x.id === emojiTab) || EMOJI_SETS[0];
+            tabs.innerHTML = EMOJI_SETS.map((x) => `<button type="button" data-tab="${x.id}" title="${x.title}" class="${x.id === set.id ? 'on' : ''}">${x.icon}</button>`).join('');
+            const list = set.list();
+            grid.innerHTML = list.length ? list.map((e) => `<button type="button" data-e="${esc(e)}">${e}</button>`).join('')
+                : `<div class="twc-enote">${set.id === 'recent' ? 'Emojis you pick show up here.' : 'Emojis from your chats show up here as messages come in.'}</div>`;
+        };
+        tabs.addEventListener('click', (e) => {
+            const b = e.target.closest('[data-tab]');
+            if (b) { emojiTab = b.getAttribute('data-tab'); paint(); }
+        });
+        grid.addEventListener('click', (e) => {
+            const b = e.target.closest('[data-e]');
+            if (!b) return;
+            const em = b.getAttribute('data-e');
+            const at = ta.selectionStart != null && document.activeElement === ta ? ta.selectionStart : ta.value.length;
+            const end = ta.selectionEnd != null && document.activeElement === ta ? ta.selectionEnd : at;
+            ta.value = ta.value.slice(0, at) + em + ta.value.slice(end);
+            // Keep the phone keyboard closed while picking; on desktop keep typing.
+            if (!('ontouchstart' in window)) { ta.focus(); ta.selectionStart = ta.selectionEnd = at + em.length; }
+            ta.dispatchEvent(new Event('input'));
+            emojiRecent = [em].concat(emojiRecent.filter((x) => x !== em)).slice(0, 32);
+            lsSet(LS_EMOJI_RECENT, JSON.stringify(emojiRecent));
+        });
+        conv.querySelector('.twc-ebtn').addEventListener('click', () => {
+            const show = pick.hidden;
+            pick.hidden = !show;
+            if (show) {
+                if (!emojiTab) emojiTab = emojiRecent.length ? 'recent' : Object.keys(emojiSeen).length ? 'chats' : 'torn';
+                paint();
+            }
+        });
+    }
+    // Characters as Torn counts them (rooms with graphemeCount count an emoji as one).
+    function lengthFor(c, text) {
+        if (c.rules && c.rules.graphemeCount && typeof Intl !== 'undefined' && Intl.Segmenter) {
+            let n = 0;
+            for (const _ of new Intl.Segmenter().segment(text)) n++;   // eslint-disable-line no-unused-vars
+            return n;
+        }
+        return text.length;
+    }
+
     // ------------------------------------------------------------ formatting
     const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
     const linkify = (s) => esc(s).replace(/\bhttps?:\/\/[^\s<]+/g, (u) => `<a href="${u}" target="_blank" rel="noopener">${u}</a>`).replace(/\n/g, '<br>');
@@ -485,6 +574,16 @@
             font-size: 18px; cursor: pointer; display: flex; align-items: center; justify-content: center; }
         #twc-root .twc-send:disabled { opacity: .5; }
         #twc-root .twc-count { font-size: 11px; color: var(--muted); align-self: center; }
+        #twc-root .twc-count.over { color: #e5534b; font-weight: 700; }
+        #twc-root .twc-ebtn { align-self: center; font-size: 22px; padding: 4px; filter: grayscale(.2); }
+        #twc-root .twc-emoji { flex: none; background: var(--panel); border-top: 1px solid var(--line); }
+        #twc-root .twc-etabs { display: flex; gap: 2px; padding: 4px 6px; border-bottom: 1px solid var(--line); overflow-x: auto; }
+        #twc-root .twc-etabs button { flex: none; background: none; border: 0; border-bottom: 2px solid transparent; padding: 6px 8px; font-size: 18px; cursor: pointer; opacity: .6; }
+        #twc-root .twc-etabs button.on { opacity: 1; border-bottom-color: var(--accent); }
+        #twc-root .twc-egrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(40px, 1fr)); max-height: 190px; overflow-y: auto; padding: 4px 6px; }
+        #twc-root .twc-egrid button { background: none; border: 0; border-radius: 6px; padding: 5px 0; font-size: 24px; line-height: 1.2; cursor: pointer; }
+        #twc-root .twc-egrid button:hover { background: var(--head); }
+        #twc-root .twc-enote { grid-column: 1 / -1; padding: 14px; text-align: center; font-size: 13px; color: var(--muted); }
         #twc-root .twc-err { padding: 6px 12px; font-size: 12.5px; color: #e5534b; background: var(--head); }
         #twc-root .twc-pick { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; color: var(--muted); text-align: center; padding: 20px; }
         #twc-root .twc-foot { padding: 6px 12px; font-size: 11px; color: var(--muted); border-top: 1px solid var(--line); flex: none; }
@@ -583,7 +682,7 @@
         currentKey = key;
         olderPending = 0;
         root.classList.add('open');
-        const max = c.rules && c.rules.maxLength;
+        const max = (c.rules && c.rules.maxLength) || DEFAULT_MAX_LEN;
         root.querySelector('.twc-conv').innerHTML = `
             <div class="twc-head">
                 <button class="twc-ib twc-back" data-a="back" title="Back">←</button>
@@ -593,9 +692,11 @@
             </div>
             <div class="twc-msgs"></div>
             <div class="twc-err" hidden></div>
+            <div class="twc-emoji" hidden><div class="twc-etabs"></div><div class="twc-egrid"></div></div>
             <div class="twc-compose">
-                <textarea rows="1" placeholder="Message" ${max ? `maxlength="${max}"` : ''}></textarea>
-                ${max ? `<span class="twc-count">0/${max}</span>` : ''}
+                <button type="button" class="twc-ib twc-ebtn" title="Emoji">😊</button>
+                <textarea rows="1" placeholder="Message"></textarea>
+                <span class="twc-count" hidden></span>
                 <button class="twc-send" title="Send">➤</button>
             </div>`;
         const conv = root.querySelector('.twc-conv');
@@ -606,8 +707,15 @@
         ta.addEventListener('input', () => {
             ta.style.height = 'auto';
             ta.style.height = Math.min(120, ta.scrollHeight) + 'px';
-            if (count) count.textContent = `${ta.value.length}/${max}`;
+            // Counter appears near the limit (always in rooms with a small one, like Trade).
+            const n = lengthFor(c, ta.value);
+            count.hidden = !(max <= 200 || n > max * 0.8);
+            count.textContent = `${n}/${max}`;
+            count.classList.toggle('over', n > max);
+            conv.querySelector('.twc-send').disabled = sending || n > max;
         });
+        emojiPicker(conv, ta);
+        ta.dispatchEvent(new Event('input'));
         ta.addEventListener('keydown', (e) => {
             // Enter sends on desktop; on phones Enter is a new line, like WhatsApp.
             if (e.key === 'Enter' && !e.shiftKey && !('ontouchstart' in window)) { e.preventDefault(); doSend(); }
@@ -691,6 +799,8 @@
         showErr('');
         const btn = root.querySelector('.twc-send');
         btn.disabled = true;
+        const pick = root.querySelector('.twc-emoji');
+        if (pick) pick.hidden = true;
         const pending = { messageId: 'pending-' + Date.now(), content: text, createdAt: Date.now(), pending: true,
             sender: myId ? { userId: myId } : null };
         const b = box(c.key);
