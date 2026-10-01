@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Points Market Shield
 // @namespace    https://github.com/nebigoktug
-// @version      0.9.0
+// @version      1.0.0
 // @description  Fat-finger guard for selling points: blocks a listing priced below a hard floor ($28,000 by default) and asks for a second confirmation when the price is below 95% of the cheapest current listings. Never lists, buys or clicks anything itself.
 // @author       Nebigoktug
 // @license      MIT
@@ -42,7 +42,7 @@
     if (window.__pmaRunning) return;
     window.__pmaRunning = true;
 
-    const VERSION  = '0.9.0';
+    const VERSION  = '1.0.0';
     const REPO_URL = 'https://github.com/nebigoktug/torn-userscripts';
     const LS_KEY   = 'pma_api_key';
     const LS_PREFS = 'pma_prefs';
@@ -53,14 +53,19 @@
     const DEFAULT_PREFS = { staticFloor: 28000, pct: 95, enabled: true };
 
     /*
-     * Sell-form selectors. Empty = find the fields by their name, placeholder
-     * or label text. Fill these in once the real page markup is known.
+     * pmarket.php markup (checked on a saved page, Oct 2026). The "ADD LISTING"
+     * button sits in span.points-want-to-add[href=…addlisting1], and Torn's
+     * confirm step opens in .confirm-wrap, also inside form#add. If Torn
+     * renames these, the fields are looked up by their label text instead.
      */
     const SEL = {
-        price: '',        // price-per-point input
-        qty: '',          // number-of-points input
-        container: '',    // element holding the sell form and its buttons
+        price: '#quantity-price',       // "Price each"
+        qty: '#quantity-points',        // "Points"
+        container: 'form#add',
         listings: '.users-point-sell > li',
+        // The "$" in the price box is a button that fills in the maximum
+        // ($100,000); it must keep working while the form is blocked.
+        exempt: '.input-money-symbol, .input-money-symbol *',
     };
 
     // ------------------------------------------------------------ storage
@@ -82,9 +87,19 @@
         return '$' + Math.round(n);
     };
     const onMarketPage = () => /\/pmarket\.php$/i.test(location.pathname);
-    // "31,000" → 31000. Torn's money fields also take "31k" / "1.5m".
-    function parseMoney(v) {
+    // "31,000" → 31000. Torn's money fields also take "31k" / "1.5m" and,
+    // relative to the field's maximum (data-money), max / half / quarter /
+    // 1/3 / 25%.
+    function parseMoney(v, max) {
         const s = String(v || '').trim().toLowerCase().replace(/[\s,$]/g, '');
+        if (max > 0) {
+            const word = { max: 1, all: 1, half: 1 / 2, quarter: 1 / 4 }[s];
+            if (word) return Math.floor(max * word);
+            let f = s.match(/^(\d+)\/(\d+)$/);
+            if (f && Number(f[2])) return Math.floor(max * Number(f[1]) / Number(f[2]));
+            f = s.match(/^(\d+(?:\.\d+)?)%$/);
+            if (f) return Math.floor(max * parseFloat(f[1]) / 100);
+        }
         const m = s.match(/^(\d+(?:\.\d+)?)([kmb])$/);
         if (m) return Math.round(parseFloat(m[1]) * { k: 1e3, m: 1e6, b: 1e9 }[m[2]]);
         const digits = s.replace(/[^0-9]/g, '');
@@ -111,7 +126,7 @@
     function pageMarket() {
         const costs = [];
         document.querySelectorAll(SEL.listings).forEach((li) => {
-            const own = li.querySelector('.cost, .price, [class*="cost"]');
+            const own = li.querySelector('.cost-each, .cost, [class*="cost"]');
             const src = own ? own.textContent : li.textContent;
             const nums = (src.match(/\$\s?[\d,]+/g) || []).map(parseMoney).filter((n) => n >= 1000);
             if (nums.length) costs.push(Math.min(...nums));
@@ -187,7 +202,7 @@
     function check() {
         if (!ctx || !ctx.price.isConnected) ctx = onMarketPage() ? findForm() : null;
         if (!ctx || !prefs.enabled) return { state: 'IDLE' };
-        const price = parseMoney(ctx.price.value);
+        const price = parseMoney(ctx.price.value, Number(ctx.price.getAttribute('data-money')) || 0);
         const qty = ctx.qty ? parseMoney(ctx.qty.value) : 0;
         const f = floors();
         const r = { price, qty, total: price * qty, expected: f.ref * qty, f };
@@ -202,7 +217,7 @@
     function buttons() {
         if (!ctx || !ctx.container) return [];
         return Array.from(ctx.container.querySelectorAll('button, input[type="submit"], input[type="button"], input[type="image"]'))
-            .filter((b) => !ours(b) && !b.closest(SEL.listings));
+            .filter((b) => !ours(b) && !b.closest(SEL.listings) && !b.matches(SEL.exempt));
     }
 
     function evaluate() {
@@ -279,7 +294,7 @@
             return ctx.container.contains(t) ? t : null;
         }
         const el = t.closest && t.closest(CLICKABLE);
-        if (!el || !ctx.container.contains(el) || el.closest(SEL.listings)) return null;
+        if (!el || !ctx.container.contains(el) || el.closest(SEL.listings) || el.matches(SEL.exempt)) return null;
         return el;
     }
     function guard(e) {

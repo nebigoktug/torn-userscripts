@@ -10,7 +10,7 @@ Torn City userscripts.
 | [Torn Flower Set Helper](Torn_Flower_Set_Helper.user.js) | Superseded by the Museum Set Helper. |
 | [Torn Pre-flight Checklist](Torn_Preflight_Checklist.user.js) | Before you fly: will energy/nerve cap while you're away, will drug/booster cooldowns run out mid-trip, is your cash right (ticket, shopping budget, mug risk), and is there a ranked war, chain or OC you'd miss. Uses the real round trip for your destination and flight type; a summary banner on the Travel Agency. |
 | [Torn Stock Dip Finder](Torn_Stock_Dip_Finder.user.js) | Swing-trading helper for the stock market: the stock furthest below its 7-day average (buy candidate), and for your open trades the +2% target and 14-day sell-by date. Rule backtested on ~5 years of daily prices (tornsy.com). Suggestions only; you trade yourself. |
-| [Torn Points Market Shield](Torn_Points_Market_Shield.user.js) | Fat-finger guard for selling points: blocks a listing below a hard floor ($28,000 by default) and asks for a second confirmation below 95% of the cheapest listings. Catches clicks, submits and Enter. Never lists anything itself. *(Beta: sell-form detection not yet checked on the real page.)* |
+| [Torn Points Market Shield](Torn_Points_Market_Shield.user.js) | Fat-finger guard for selling points: blocks a listing below a hard floor ($28,000 by default) and asks for a second confirmation below 95% of the cheapest listings. Catches clicks, submits and Enter. Never lists anything itself. |
 | [Torn Shoplifting Assistant](shoplifting-assistant.user.js) | Shoplifting helper. |
 | [Torn Panel Boilerplate](Torn_Panel_Boilerplate.user.js) | Reusable panel boilerplate for new scripts. |
 
