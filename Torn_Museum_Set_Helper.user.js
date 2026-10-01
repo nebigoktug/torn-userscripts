@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Museum Set Helper
 // @namespace    https://github.com/nebigoktug
-// @version      3.2.1
+// @version      3.3.0
 // @description  Every museum set in one panel: flowers, plushies and artifacts (coins, arrowheads, sculptures, Companion Scripts, Senet, amulet…). Counts what you own, shows complete sets and what's missing for a target, where flowers and plushies are sold abroad, what the missing items cost on the item market and in player bazaars (via weav3r.dev), and the profit of exchanging sets for points. Display only, no automation.
 // @author       Nebigoktug
 // @license      MIT
@@ -29,9 +29,14 @@
  * Non-API requests (disclosed per Torn's scripting rules): when YOU tap
  * "Live counts", the script makes one request for the open tab's category
  * on your Items page (item.php, getCategoryList) — the same request Torn's
- * own Items page makes. Nothing is ever requested automatically. On the
- * Items page it also reads the Flower / Plushie / Artifact lists Torn loads
+ * own Items page makes. On the Items page it also reads the Flower / Plushie / Artifact lists Torn loads
  * when you open those tabs.
+ *
+ * OPT-IN "Auto" setting (off by default): repeats that same item.php request
+ * every 5-60 s while the panel is open and the page is in front. That is an
+ * automatic non-API request, which Torn's scripting rules do not allow — it
+ * can get your account flagged. Use it at your own risk; it warns you before
+ * it turns on.
  */
 
 (function () {
@@ -45,7 +50,7 @@
     if (window.__tfsRunning) return;
     window.__tfsRunning = true;
 
-    const VERSION  = '3.2.1';
+    const VERSION  = '3.3.0';
     const REPO_URL = 'https://github.com/nebigoktug/torn-userscripts';
     const LS_KEY   = 'tfs_api_key';             // same key as the old Flower Set Helper
     const LS_PREFS = 'tfs_prefs';
@@ -121,7 +126,7 @@
     ];
     const groupOf = (key) => GROUPS.find((g) => g.key === key) || GROUPS[0];
 
-    const DEFAULT_PREFS = { group: 'flowers', artifactSet: 'coins', showPrices: true, bazaars: true, museumDay: false,
+    const DEFAULT_PREFS = { group: 'flowers', artifactSet: 'coins', showPrices: true, bazaars: true, museumDay: false, autoLive: 0,
         targets: { flowers: 10, plushies: 10, artifacts: 1 } };
 
     // ------------------------------------------------------------ storage
@@ -450,7 +455,7 @@
     ];
 
     let overlay = null;
-    function closePanel() { if (overlay) { overlay.remove(); overlay = null; } }
+    function closePanel() { stopAutoLive(); if (overlay) { overlay.remove(); overlay = null; } }
 
     function openPanel() {
         if (overlay) return;
@@ -533,7 +538,10 @@
                 <label title="Include player bazaars (weav3r.dev)"><input type="checkbox" id="tfs-bazaars" ${prefs.bazaars ? 'checked' : ''}> Bazaars</label>
                 <label title="Museum Day event: 10% more points"><input type="checkbox" id="tfs-mday" ${prefs.museumDay ? 'checked' : ''}> Museum Day</label>
                 <button class="tfs-btn" id="tfs-refresh">Refresh</button>
-                <button class="tfs-btn tfs-btn2" id="tfs-live" title="Read your live ${g.cat.toLowerCase()} counts now (one request, only when you tap)">Live counts</button>
+                <button class="tfs-btn tfs-btn2" id="tfs-live" title="Read your live ${g.cat.toLowerCase()} counts now (one request, only when you tap)" ${prefs.autoLive ? 'hidden' : ''}>Live counts</button>
+                <label title="Re-read live counts automatically while this panel is open. Against Torn's scripting rules: at your own risk.">Auto
+                    <select id="tfs-auto">${[0, 5, 10, 30, 60].map((n) =>
+                        `<option value="${n}" ${n === prefs.autoLive ? 'selected' : ''}>${n ? n + 's' : 'Off'}</option>`).join('')}</select></label>
             </div>
             <div id="tfs-out"><div class="tfs-msg">Loading…</div></div>`;
         const targetEl = b.querySelector('#tfs-target');
@@ -566,7 +574,16 @@
         });
         b.querySelector('#tfs-refresh').addEventListener('click', () => refresh(true));
         b.querySelector('#tfs-live').addEventListener('click', goLiveCounts);
+        const auto = b.querySelector('#tfs-auto');
+        auto.addEventListener('change', () => {
+            const n = Number(auto.value) || 0;
+            if (n && !prefs.autoLive && !window.confirm(AUTO_WARNING)) { auto.value = '0'; return; }
+            prefs = Object.assign({}, prefs, { autoLive: n });
+            savePrefs(prefs);
+            renderMain();
+        });
         refresh(false);
+        startAutoLive();
     }
 
     const lastInv = {};          // group -> { counts, timestamp }; reused when only the target changes
@@ -763,7 +780,7 @@
                 ${(() => {
                     const inv = currentInventory(g.key);
                     return inv.source === 'page'
-                        ? `Live counts from your Items, read ${ago(inv.timestamp) || 'just now'}.`
+                        ? `Live counts from your Items, read ${ago(inv.timestamp) || 'just now'}${prefs.autoLive ? ` · auto every ${prefs.autoLive}s` : ''}.`
                         : `Inventory from the API, updated ${ago(inv.timestamp) || 'recently'} — Torn caches it for up to an hour.
                            Tap <b>Live counts</b> for up-to-the-second numbers.`;
                 })()}
@@ -902,6 +919,43 @@
         if (onItemsPage()) { closePanel(); showHint(); return; }
         location.href = 'https://www.torn.com/item.php';
     }
+    // Opt-in automatic live counts (see the header). Only while the panel is
+    // open and the page is in front; stops after repeated failures.
+    const AUTO_WARNING = 'Auto live counts repeat a non-API request to Torn (item.php) every few seconds.\n\n' +
+        "Torn's scripting rules only allow non-API requests that you start yourself, so this can get your account flagged or banned.\n\n" +
+        'Turn it on at your own risk?';
+    let autoTimer = null, autoBusy = false, autoFails = 0;
+    function stopAutoLive() { clearInterval(autoTimer); autoTimer = null; }
+    function startAutoLive() {
+        stopAutoLive();
+        autoFails = 0;
+        if (!prefs.autoLive) return;
+        const tick = async () => {
+            if (!overlay || !overlay.querySelector('#tfs-out')) { stopAutoLive(); return; }
+            if (autoBusy || document.hidden || !document.hasFocus()) return;
+            autoBusy = true;
+            const g = groupOf(prefs.group);
+            try {
+                const counts = await fetchLiveCounts(g.cat);
+                if (!counts) {
+                    if (++autoFails >= 3) {
+                        stopAutoLive();
+                        const out = overlay && overlay.querySelector('#tfs-out');
+                        if (out) out.insertAdjacentHTML('beforebegin', '<div class="tfs-msg err" style="margin-bottom:10px">Auto live counts stopped: Torn did not answer 3 times. Reopen the panel to try again.</div>');
+                    }
+                    return;
+                }
+                autoFails = 0;
+                const old = pageSnapshot(g.key);
+                savePageSnapshot(g.key, counts);
+                // Only redraw when a count changed (keeps the table still while you read it).
+                if (!old || JSON.stringify(old.counts) !== JSON.stringify(counts) || currentInventory(g.key).source !== 'page') refresh(false);
+            } finally { autoBusy = false; }
+        };
+        tick();
+        autoTimer = setInterval(tick, prefs.autoLive * 1000);
+    }
+
     let hintTimer = null;
     function showHint() {
         const req = liveRequest();
