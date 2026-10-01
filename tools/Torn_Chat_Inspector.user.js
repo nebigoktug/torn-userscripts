@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Chat Inspector (dev tool)
 // @namespace    https://github.com/nebigoktug
-// @version      0.2.0
+// @version      0.3.0
 // @description  Developer tool: records how Torn's chat is built (page structure) and what its live messages look like, with all message text and names removed, so a chat reskin can be written against it. Makes no requests; nothing leaves your device unless you copy or save the report yourself.
 // @author       Nebigoktug
 // @license      MIT
@@ -31,7 +31,7 @@
     if (window.__tciRunning) return;
     window.__tciRunning = true;
 
-    const VERSION = '0.2.0';
+    const VERSION = '0.3.0';
     const MAX_SAMPLES = 3;          // kept per distinct message shape
     const MAX_SHAPES = 300;
     const CHAT_URL_RE = /chat|sendbird|message|socket|ws\b|pusher|centrifug/i;
@@ -98,37 +98,92 @@
         paintCounts();
     }
 
-    // WebSocket.prototype.send is patched instead of replacing the
-    // WebSocket class: 0.2.0 replaced the class and Torn's chat then never
-    // connected. A socket is picked up the first time Torn sends on it
-    // (Centrifugo always starts with a connect command).
-    const WSP = window.WebSocket && window.WebSocket.prototype;
+    // The WebSocket class itself is never replaced (0.1.0 did, and that may
+    // have upset Torn's chat). A socket is picked up the first time Torn
+    // attaches a handler to it or sends on it; its close code is recorded,
+    // which tells why a connection failed.
+    const seen = new WeakSet();
+    function watchSocket(ws) {
+        if (seen.has(ws)) return;
+        seen.add(ws);
+        const entry = { url: cleanUrl(ws.url), seen: new Date().toISOString(), frames: 0 };
+        rec.sockets.push(entry);
+        ws.__tciCh = 'ws#' + rec.sockets.length;
+        const add = EventTarget.prototype.addEventListener;
+        add.call(ws, 'open', () => { entry.opened = true; paintCounts(); });
+        add.call(ws, 'message', (e) => { entry.frames++; try { note(ws.__tciCh, 'in', e.data); } catch (err) {} });
+        add.call(ws, 'error', () => { entry.error = true; });
+        add.call(ws, 'close', (e) => { entry.closed = { code: e.code, reason: String(e.reason || '').slice(0, 80), clean: e.wasClean }; paintCounts(); });
+    }
+    function hookTarget(Cls, onFound) {
+        const P = Cls && Cls.prototype;
+        if (!P) return;
+        ['onopen', 'onmessage', 'onclose', 'onerror'].forEach((prop) => {
+            const d = Object.getOwnPropertyDescriptor(P, prop);
+            if (!d || !d.set) return;
+            Object.defineProperty(P, prop, Object.assign({}, d, {
+                set(v) { try { onFound(this); } catch (e) {} return d.set.call(this, v); },
+            }));
+        });
+        const add = P.addEventListener || EventTarget.prototype.addEventListener;
+        P.addEventListener = function () { try { onFound(this); } catch (e) {} return add.apply(this, arguments); };
+        return P;
+    }
+    const WSP = hookTarget(window.WebSocket, watchSocket);
     if (WSP && WSP.send) {
         const nativeSend = WSP.send;
-        const seen = new WeakSet();
         WSP.send = function (data) {
-            try {
-                if (!seen.has(this)) {
-                    seen.add(this);
-                    const entry = { url: cleanUrl(this.url), opened: new Date().toISOString(), frames: 0 };
-                    rec.sockets.push(entry);
-                    const ch = 'ws#' + rec.sockets.length;
-                    this.__tciCh = ch;
-                    this.addEventListener('message', (e) => { entry.frames++; try { note(ch, 'in', e.data); } catch (err) {} });
-                }
-                note(this.__tciCh, 'out', data);
-            } catch (err) { /* never break Torn's socket */ }
+            try { watchSocket(this); note(this.__tciCh, 'out', data); } catch (err) { /* never break Torn's socket */ }
             return nativeSend.apply(this, arguments);
         };
     }
+    // Centrifugo's fallback transport can also be Server-Sent Events.
+    hookTarget(window.EventSource, (es) => {
+        if (seen.has(es)) return;
+        seen.add(es);
+        const entry = { url: cleanUrl(es.url), kind: 'EventSource', seen: new Date().toISOString(), frames: 0 };
+        rec.sockets.push(entry);
+        const ch = 'sse#' + rec.sockets.length;
+        EventTarget.prototype.addEventListener.call(es, 'message', (e) => { entry.frames++; try { note(ch, 'in', e.data); } catch (err) {} });
+    });
 
-    function noteHttp(method, url, body, text) {
-        if (!CHAT_URL_RE.test(url)) return;
-        const entry = { method, url: cleanUrl(url).replace(/\d{5,}/g, '9…') };
+    function httpEntry(method, url, body) {
+        if (!CHAT_URL_RE.test(url)) return null;
+        const entry = { method: String(method || 'GET').toUpperCase(), url: cleanUrl(url).replace(/\d{5,}/g, '9…'), at: new Date().toISOString() };
         if (body && typeof body === 'string') { try { entry.request = redact(JSON.parse(body), '', 0); } catch (e) { entry.request = `str(${body.length})`; } }
-        const ch = 'http ' + entry.url.replace(/\?.*/, '');
-        if (rec.http.length < 100) rec.http.push(entry);
-        if (text != null) note(ch, 'in', text);
+        else if (body) entry.request = Object.prototype.toString.call(body);
+        if (rec.http.length < 150) rec.http.push(entry);
+        paintCounts();
+        return entry;
+    }
+    const chOf = (entry) => 'http ' + entry.url.replace(/\?.*/, '');
+    // A long-lived streaming answer (HTTP-stream / SSE fallback) never
+    // "finishes", so it is read piece by piece: one JSON message per line.
+    function noteLines(ch, text) {
+        text.split(/\r?\n/).forEach((line) => {
+            const l = line.replace(/^data:\s?/, '').trim();
+            if (l && !/^(event|id|retry):/.test(line)) note(ch, 'in', l);
+        });
+    }
+    async function readStream(resp, entry) {
+        const reader = resp.body.getReader();
+        const dec = new TextDecoder();
+        let buf = '';
+        entry.streaming = true;
+        for (;;) {
+            const { value, done } = await reader.read();
+            if (done) break;
+            entry.chunks = (entry.chunks || 0) + 1;
+            if (typeof value === 'string') buf += value;
+            else {
+                const txt = dec.decode(value, { stream: true });
+                if (/[\x00-\x08\x0e-\x1f]/.test(txt)) { note(chOf(entry), 'in', value.buffer || value); continue; }   // binary (protobuf)
+                buf += txt;
+            }
+            const cut = buf.lastIndexOf('\n');
+            if (cut >= 0) { noteLines(chOf(entry), buf.slice(0, cut)); buf = buf.slice(cut + 1); }
+        }
+        if (buf.trim()) noteLines(chOf(entry), buf);
     }
     const nativeFetch = window.fetch;
     if (nativeFetch) {
@@ -136,8 +191,16 @@
             const url = typeof input === 'string' ? input : (input && input.url) || '';
             const method = (init && init.method) || (input && input.method) || 'GET';
             const p = nativeFetch.apply(this, arguments);
-            if (CHAT_URL_RE.test(url)) {
-                p.then((r) => r.clone().text()).then((t) => noteHttp(method, url, init && init.body, t)).catch(() => {});
+            const entry = httpEntry(method, url, init && init.body);
+            if (entry) {
+                p.then((r) => {
+                    entry.status = r.status;
+                    entry.type = (r.headers.get('content-type') || '').split(';')[0];
+                    const c = r.clone();
+                    const stream = /event-stream|stream|octet|protobuf/i.test(entry.type) || /stream|sse|connection/i.test(url);
+                    if (stream && c.body && c.body.getReader) return readStream(c, entry);
+                    return c.text().then((t) => note(chOf(entry), 'in', t));
+                }).catch((e) => { entry.failed = String(e && e.message || e).slice(0, 80); });
             }
             return p;
         };
@@ -148,8 +211,15 @@
         X.open = function (method, url) { this.__tci = { method, url: String(url || '') }; return open.apply(this, arguments); };
         X.send = function (body) {
             const info = this.__tci;
-            if (info && CHAT_URL_RE.test(info.url)) {
-                this.addEventListener('load', () => { try { noteHttp(info.method, info.url, body, this.responseText); } catch (e) {} });
+            const entry = info && httpEntry(info.method, info.url, body);
+            if (entry) {
+                this.addEventListener('load', () => {
+                    try {
+                        entry.status = this.status;
+                        const t = this.responseType === '' || this.responseType === 'text' ? this.responseText : JSON.stringify(this.response);
+                        note(chOf(entry), 'in', t);
+                    } catch (e) {}
+                });
             }
             return send.apply(this, arguments);
         };
@@ -200,7 +270,7 @@
         const el = document.getElementById('tci-counts');
         if (el) el.textContent = counts();
     }
-    const counts = () => `Sockets: ${rec.sockets.length} · message types: ${Object.keys(rec.shapes).length} · ` +
+    const counts = () => `Sockets: ${rec.sockets.length} (open ${rec.sockets.filter((x) => x.opened).length}) · requests: ${rec.http.length} · message types: ${Object.keys(rec.shapes).length} · ` +
         `frames: ${Object.values(rec.shapes).reduce((s, x) => s + x.count, 0)} · chat boxes on page: ${chatRoots().length}`;
     function openPanel() {
         if (document.getElementById('tci-overlay')) return;
