@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Chat Panel
 // @namespace    https://github.com/nebigoktug
-// @version      0.1.0
+// @version      0.1.1
 // @description  A full-screen messenger-style view of Torn's Chat 3.1: one list of all your chats with last message, time, unread count and online dot, and a bubble view per chat. Torn's own chat does the work underneath: messages are read from what Torn already loads, and sending types into Torn's own message box.
 // @author       Nebigoktug
 // @license      MIT
@@ -20,7 +20,13 @@
  * Chat 3.1 loads its data as JSON (/tchat/rooms, /tchat/dm, …/messages) and
  * gets new messages over its WebSocket. This script listens to those
  * answers on the page you are viewing and draws them as a chat list and
- * bubbles. It makes no requests of its own.
+ * bubbles.
+ *
+ * Non-API requests (disclosed per Torn's scripting rules): when you tap a
+ * chat whose messages Torn hasn't loaded on this page (a private chat whose
+ * window was already open, for example), the script asks Torn's chat for
+ * that chat's latest 50 messages once — the same request Torn's own chat
+ * makes. Nothing is requested automatically.
  *
  * Torn's chat keeps running underneath the panel. When you tap a chat, the
  * matching button in Torn's chat bar is tapped so Torn opens (and loads) that
@@ -38,7 +44,7 @@
     if (window.__twcRunning) return;
     window.__twcRunning = true;
 
-    const VERSION  = '0.1.0';
+    const VERSION  = '0.1.1';
     const REPO_URL = 'https://github.com/nebigoktug/torn-userscripts';
     const LS_CONVS = 'twc_convs';      // chat list (names, last message) for a quick start
     const LS_ME    = 'twc_me';
@@ -92,7 +98,7 @@
             b.list.push(m);
             added++;
         });
-        if (opts && 'hasOlder' in opts) b.hasOlder = !!opts.hasOlder;
+        if (opts && 'hasOlder' in opts) { b.hasOlder = !!opts.hasOlder; b.loaded = true; }
         b.list.sort((a, c) => (a.createdAt || 0) - (c.createdAt || 0));
         const newest = b.list[b.list.length - 1];
         if (newest && !newest.pending) {
@@ -296,6 +302,25 @@
         }
         return waitFor(() => tornWindow(c), 4000);
     }
+    // One request, only after a tap on a chat Torn hasn't loaded: the same
+    // address Torn's chat uses. It goes through the fetch hook above, so the
+    // answer is read like Torn's own.
+    const historyAsked = new Set();
+    async function fetchHistory(c) {
+        if (historyAsked.has(c.key)) return '';
+        historyAsked.add(c.key);
+        const url = `/tchat/${c.type === 'dm' ? 'dm' : 'rooms'}/${encodeURIComponent(c.id)}/messages?prev_limit=50`;
+        try {
+            const r = await window.fetch(url, { credentials: 'same-origin', headers: { accept: 'application/json' } });
+            if (!r.ok) { historyAsked.delete(c.key); return `Torn's chat answered ${r.status} for this chat.`; }
+            await waitFor(() => box(c.key).loaded, 1000);
+            return box(c.key).loaded ? '' : 'No messages came back for this chat.';
+        } catch (e) {
+            historyAsked.delete(c.key);
+            return 'Could not load this chat\'s messages.';
+        }
+    }
+
     // Scroll Torn's window to its top so Torn loads the next older page.
     function loadOlder() {
         const c = convs.get(currentKey);
@@ -568,9 +593,14 @@
         renderMessages(false, true);
         renderList();
         // Let Torn open this chat too: that loads its messages and marks them read.
-        openInTorn(c).then((win) => {
+        // If Torn already had it open, it won't load them again: ask once ourselves.
+        openInTorn(c).then(async (win) => {
+            if (currentKey !== key || box(key).loaded) return;
+            await waitFor(() => box(key).loaded || currentKey !== key, 1500);
+            if (currentKey !== key || box(key).loaded) return;
+            const err = await fetchHistory(c);
             if (currentKey !== key) return;
-            if (!win && !box(key).list.length) showErr('Could not open this chat in Torn\'s chat bar.');
+            if (err) showErr(err + (win ? '' : ' Could not open this chat in Torn\'s chat bar either.'));
         });
     }
     function paintHeader() {
@@ -603,7 +633,8 @@
         const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 120;
         const oldHeight = el.scrollHeight, oldTop = el.scrollTop;
         let html = `<div class="twc-older">${olderPending ? 'Loading older messages…' : ''}</div>`;
-        if (!b.list.length) html += '<div class="twc-empty">Loading messages…</div>';
+        if (!b.list.length) html += `<div class="twc-empty">${b.loaded ? 'No messages yet.' : 'Loading messages…'}</div>`;
+        else if (!b.loaded) html += '<div class="twc-older">Loading earlier messages…</div>';
         let lastDay = '', lastSender = null;
         b.list.forEach((m) => {
             const d = dayKey(m.createdAt || Date.now());
