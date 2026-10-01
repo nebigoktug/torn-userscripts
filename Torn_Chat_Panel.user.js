@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Chat Panel
 // @namespace    https://github.com/nebigoktug
-// @version      0.6.1
+// @version      0.6.2
 // @description  A full-screen messenger-style view of Torn's Chat 3.1: one list of all your chats with last message, time, unread count and online dot, and a bubble view per chat. Torn's own chat does the work underneath: messages are read from what Torn already loads, and sending types into Torn's own message box.
 // @author       Nebigoktug
 // @license      MIT
@@ -47,7 +47,7 @@
     if (window.__twcRunning) return;
     window.__twcRunning = true;
 
-    const VERSION  = '0.6.1';
+    const VERSION  = '0.6.2';
     const REPO_URL = 'https://github.com/nebigoktug/torn-userscripts';
     const LS_CONVS = 'twc_convs';      // chat list (names, last message) for a quick start
     const LS_ME    = 'twc_me';
@@ -84,6 +84,13 @@
             return nativePlay.apply(this, arguments);
         };
     })();
+
+    // Hide Torn's chat from the very start of every page load (document-start),
+    // before Torn draws it, so its windows don't flash up on page changes.
+    if (prefs.hideTorn) {
+        document.documentElement.classList.add('twc-hide-torn');
+        injectBadgeStyles();
+    }
     const isPinned = (key) => prefs.pinned.includes(key);
     const isMuted = (key) => prefs.muted.includes(key);                // Torn wiki: chat messages are capped at 840 characters
     const ROOM_ICONS = { faction: '🛡️', company: '🏢', global: '🌐', trade: '🔁' };
@@ -1034,6 +1041,12 @@
                which would otherwise take taps through the invisible layer. */
             html.twc-hide-torn [data-twc-hidden] { opacity: 0 !important; }
             html.twc-hide-torn [data-twc-hidden], html.twc-hide-torn [data-twc-hidden] * { pointer-events: none !important; }
+            /* The same by structure, so it already applies while Torn first draws its chat on
+               each page (the attributes above only come a moment later). Torn's chat root holds
+               the windows area and the button bar; everything but the bar is hidden. */
+            html.twc-hide-torn #chatRoot > div > div:not(:has(#people_panel_button, #twc-btn, #notes_settings_button, [data-nth-hub])) { opacity: 0 !important; }
+            html.twc-hide-torn #chatRoot > div > div:not(:has(#people_panel_button, #twc-btn, #notes_settings_button, [data-nth-hub])),
+            html.twc-hide-torn #chatRoot > div > div:not(:has(#people_panel_button, #twc-btn, #notes_settings_button, [data-nth-hub])) * { pointer-events: none !important; }
             html.twc-hide-torn #chatRoot [id^="chat_panel_button:"], html.twc-hide-torn #people_panel_button,
             html.twc-hide-torn #notes_settings_button { display: none !important; }`;
         (document.head || document.documentElement).appendChild(st);
