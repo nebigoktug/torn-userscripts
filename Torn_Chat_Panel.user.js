@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Chat Panel
 // @namespace    https://github.com/nebigoktug
-// @version      0.5.1
+// @version      0.6.0
 // @description  A full-screen messenger-style view of Torn's Chat 3.1: one list of all your chats with last message, time, unread count and online dot, and a bubble view per chat. Torn's own chat does the work underneath: messages are read from what Torn already loads, and sending types into Torn's own message box.
 // @author       Nebigoktug
 // @license      MIT
@@ -47,7 +47,7 @@
     if (window.__twcRunning) return;
     window.__twcRunning = true;
 
-    const VERSION  = '0.5.1';
+    const VERSION  = '0.6.0';
     const REPO_URL = 'https://github.com/nebigoktug/torn-userscripts';
     const LS_CONVS = 'twc_convs';      // chat list (names, last message) for a quick start
     const LS_ME    = 'twc_me';
@@ -58,9 +58,32 @@
     const LS_PREFS = 'twc_prefs';
     const AUTHOR = { name: 'Nebigoktug', id: 3980062 };
     const touch = 'ontouchstart' in window;
-    const prefs = Object.assign({ size: 'm', enterSends: !touch, wallpaper: true, ffbs: true, hideTorn: true, closeTornWins: true, pinned: [], muted: [] },
+    const prefs = Object.assign({ size: 'm', enterSends: !touch, wallpaper: true, ffbs: true, hideTorn: true, closeTornWins: true, muteSound: false, pinned: [], muted: [] },
         (() => { try { return JSON.parse(localStorage.getItem(LS_PREFS) || '{}') || {}; } catch (e) { return {}; } })());
     const savePrefs = () => lsSet(LS_PREFS, JSON.stringify(prefs));
+
+    // Chat sound off (a setting). A sound counts as the chat's when its file
+    // name says so or when Torn's chat code is what plays it; other sounds
+    // (casino etc.) are left alone. The last few sounds are listed in the
+    // settings so the guess can be checked.
+    const soundsSeen = [];
+    (function hookSounds() {
+        const MP = window.HTMLMediaElement && window.HTMLMediaElement.prototype;
+        if (!MP || !MP.play) return;
+        const nativePlay = MP.play;
+        MP.play = function () {
+            try {
+                const src = String(this.currentSrc || this.src || (this.querySelector && this.querySelector('source') && this.querySelector('source').src) || '');
+                const stack = String(new Error().stack || '');
+                const chat = /chat|tchat|message|notif|sendbird|centrifug/i.test(src) || /chat/i.test(stack);
+                const blocked = chat && prefs.muteSound;
+                soundsSeen.unshift({ file: src.replace(/^.*\//, '').slice(0, 60) || '(no file)', chat, blocked, at: Date.now() });
+                soundsSeen.length = Math.min(soundsSeen.length, 5);
+                if (blocked) return Promise.resolve();
+            } catch (e) {}
+            return nativePlay.apply(this, arguments);
+        };
+    })();
     const isPinned = (key) => prefs.pinned.includes(key);
     const isMuted = (key) => prefs.muted.includes(key);                // Torn wiki: chat messages are capped at 840 characters
     const ROOM_ICONS = { faction: '🛡️', company: '🏢', global: '🌐', trade: '🔁' };
@@ -705,6 +728,8 @@
         #twc-root .twc-set small { display: block; font-size: 11.5px; color: var(--muted); }
         #twc-root .twc-set select { background: var(--head); color: var(--fg); border: 0; border-radius: 6px; padding: 5px 8px; font: inherit; }
         #twc-root .twc-set input[type="checkbox"] { width: 20px; height: 20px; accent-color: var(--accent); }
+        #twc-root .twc-sounds { margin: 0 18px 6px; font-size: 11.5px; color: var(--muted); }
+        #twc-root .twc-sounds span { display: block; color: var(--muted); }
         #twc-root .twc-support { margin: 8px 18px 4px; padding: 10px 12px; border-radius: 10px; background: var(--head); font-size: 13px; line-height: 1.45; }
         #twc-root .twc-support a { color: var(--link) !important; font-weight: 600; }
         #twc-root .twc-done { display: block; margin: 10px 18px 2px auto; padding: 8px 18px; border: 0; border-radius: 18px; background: var(--accent); color: #fff !important; font: inherit; font-weight: 600; cursor: pointer; }
@@ -940,6 +965,9 @@
             ${row('FF / BS next to names <small>(from FF/BS Badges, no extra requests)</small>', chk('ffbs'))}
             ${row('Hide Torn\'s own chat <small>(it keeps running underneath; turn off to reach Torn\'s chat settings)</small>', chk('hideTorn'))}
             ${row('Close the Torn chat windows the panel opened, when it closes', chk('closeTornWins'))}
+            ${row('Mute chat sounds <small>(only sounds that come from Torn\'s chat)</small>', chk('muteSound'))}
+            ${soundsSeen.length ? `<div class="twc-sounds">Sounds on this page: ${soundsSeen.map((x) =>
+                `<span>${esc(x.file)} — ${x.blocked ? 'muted' : x.chat ? 'chat' : 'not chat'}, ${tct(x.at)}</span>`).join('')}</div>` : ''}
             <div class="twc-support">Enjoying the panel? A Xanax or a few $ to
                 <a href="/profiles.php?XID=${AUTHOR.id}">${AUTHOR.name} [${AUTHOR.id}]</a> keeps it going ❤️</div>
             <button type="button" class="twc-done">Done</button>`);
