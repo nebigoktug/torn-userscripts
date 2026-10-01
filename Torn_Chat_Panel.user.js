@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Chat Panel
 // @namespace    https://github.com/nebigoktug
-// @version      0.1.1
+// @version      0.1.2
 // @description  A full-screen messenger-style view of Torn's Chat 3.1: one list of all your chats with last message, time, unread count and online dot, and a bubble view per chat. Torn's own chat does the work underneath: messages are read from what Torn already loads, and sending types into Torn's own message box.
 // @author       Nebigoktug
 // @license      MIT
@@ -44,7 +44,7 @@
     if (window.__twcRunning) return;
     window.__twcRunning = true;
 
-    const VERSION  = '0.1.1';
+    const VERSION  = '0.1.2';
     const REPO_URL = 'https://github.com/nebigoktug/torn-userscripts';
     const LS_CONVS = 'twc_convs';      // chat list (names, last message) for a quick start
     const LS_ME    = 'twc_me';
@@ -60,7 +60,12 @@
     function lsGet(k) { try { return localStorage.getItem(k); } catch (e) { return null; } }
     function lsSet(k, v) { try { localStorage.setItem(k, v); } catch (e) {} }
     try {
-        (JSON.parse(lsGet(LS_CONVS) || '[]') || []).forEach((c) => { if (c && c.key) convs.set(c.key, Object.assign(c, { stale: true })); });
+        (JSON.parse(lsGet(LS_CONVS) || '[]') || []).forEach((c) => {
+            if (!c || !c.key) return;
+            // v0.1.0/0.1.1 saved previews still HTML-encoded.
+            if (c.last && /&(#\d+|#x[0-9a-f]+|quot|amp|lt|gt|apos);/i.test(c.last.content || '')) c.last.content = decode(c.last.content);
+            convs.set(c.key, Object.assign(c, { stale: true }));
+        });
     } catch (e) {}
     let saveTimer = null;
     function saveConvs() {
@@ -91,6 +96,7 @@
         let added = 0;
         (items || []).forEach((m) => {
             if (!m || !m.messageId || b.ids.has(m.messageId)) return;
+            clean(m);
             // Our own pending bubble: replace it with the real one.
             const pi = b.list.findIndex((x) => x.pending && x.content === m.content && isMine(key, m));
             if (pi >= 0) b.list.splice(pi, 1);
@@ -107,7 +113,28 @@
         }
         return added;
     }
-    const slim = (m) => ({ content: String(m.content || '').slice(0, 200), createdAt: m.createdAt,
+    // Torn sends chat text already HTML-encoded ("She&#039;s"). Decode it once
+    // on the way in; everything is escaped again when drawn.
+    // (A function declaration, so the saved-list loader above can use it.)
+    function decode(str) {
+        const ent = { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'", nbsp: '\u00a0' };
+        return String(str == null ? '' : str).replace(/&(#x[0-9a-f]+|#\d+|[a-z]+);/gi, (all, e) => {
+            if (e[0] === '#') {
+                const n = e[1] === 'x' || e[1] === 'X' ? parseInt(e.slice(2), 16) : parseInt(e.slice(1), 10);
+                return n > 0 && n < 0x110000 ? String.fromCodePoint(n) : all;
+            }
+            return ent[e.toLowerCase()] != null ? ent[e.toLowerCase()] : all;
+        });
+    }
+    function clean(m) {
+        if (m && !m.__twcClean) {
+            m.content = decode(m.content);
+            if (m.sender && m.sender.name) m.sender.name = decode(m.sender.name);
+            m.__twcClean = true;
+        }
+        return m;
+    }
+    const slim = (m) => ({ content: String(clean(m).content || '').slice(0, 200), createdAt: m.createdAt,
         senderId: m.sender && m.sender.userId, senderName: m.sender && m.sender.name });
     function isMine(key, m) {
         const uid = m && m.sender && m.sender.userId;
@@ -120,9 +147,9 @@
     function onJson(path, data) {
         let m;
         if (path === '/tchat/rooms' && data && Array.isArray(data.items)) {
-            data.items.forEach((r) => { if (!r.isLeft) conv(roomKey(r.id), { type: 'room', id: r.id, name: r.name, rules: r.rules || null }); });
+            data.items.forEach((r) => { if (!r.isLeft) conv(roomKey(r.id), { type: 'room', id: r.id, name: decode(r.name), rules: r.rules || null }); });
         } else if ((m = path.match(/^\/tchat\/rooms\/([^/]+)\/join$/)) && data && data.id) {
-            conv(roomKey(data.id), { type: 'room', id: data.id, name: data.name, rules: data.rules || null });
+            conv(roomKey(data.id), { type: 'room', id: data.id, name: decode(data.name), rules: data.rules || null });
         } else if (path === '/tchat/dm' && data && Array.isArray(data.items)) {
             data.items.forEach(dmItem);
         } else if ((m = path.match(/^\/tchat\/dm\/(\d+)$/)) && data && data.otherUser) {
@@ -150,7 +177,7 @@
     function dmItem(d) {
         const u = d.otherUser || {};
         if (!u.userId) return;
-        const c = conv(dmKey(u.userId), { type: 'dm', id: String(u.userId), name: u.name, avatar: u.avatar });
+        const c = conv(dmKey(u.userId), { type: 'dm', id: String(u.userId), name: decode(u.name), avatar: u.avatar });
         if (d.lastMessage && (!c.last || (d.lastMessage.createdAt || 0) >= (c.last.createdAt || 0))) c.last = slim(d.lastMessage);
         if (d.lastMessage && d.lastMessage.sender && d.lastMessage.sender.userId !== u.userId) learnMe(d.lastMessage.sender.userId);
     }
@@ -167,7 +194,7 @@
             const got = acts.onMessageReceived;
             if (got && got.message) {
                 const id = String(got.id);
-                const m = got.message;
+                const m = clean(got.message);
                 const key = convs.has(roomKey(id)) || ROOM_ICONS[id] ? roomKey(id) : dmKey(id);
                 if (key.startsWith('dm:')) {
                     const c = conv(key, { type: 'dm', id });
