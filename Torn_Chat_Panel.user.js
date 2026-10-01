@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Chat Panel
 // @namespace    https://github.com/nebigoktug
-// @version      0.5.0
+// @version      0.5.1
 // @description  A full-screen messenger-style view of Torn's Chat 3.1: one list of all your chats with last message, time, unread count and online dot, and a bubble view per chat. Torn's own chat does the work underneath: messages are read from what Torn already loads, and sending types into Torn's own message box.
 // @author       Nebigoktug
 // @license      MIT
@@ -47,7 +47,7 @@
     if (window.__twcRunning) return;
     window.__twcRunning = true;
 
-    const VERSION  = '0.5.0';
+    const VERSION  = '0.5.1';
     const REPO_URL = 'https://github.com/nebigoktug/torn-userscripts';
     const LS_CONVS = 'twc_convs';      // chat list (names, last message) for a quick start
     const LS_ME    = 'twc_me';
@@ -1002,7 +1002,10 @@
                 border-radius: 9px; background: #e5534b; color: #fff; font: 700 11px/18px Arial, sans-serif; text-align: center;
                 box-sizing: border-box; pointer-events: none; z-index: 1; }
             /* Torn's own chat, hidden but still running underneath (it loads and sends for us). */
-            html.twc-hide-torn [data-twc-hidden] { opacity: 0 !important; pointer-events: none !important; }
+            /* Every element inside, too: Torn's windows set pointer-events: auto on themselves,
+               which would otherwise take taps through the invisible layer. */
+            html.twc-hide-torn [data-twc-hidden] { opacity: 0 !important; }
+            html.twc-hide-torn [data-twc-hidden], html.twc-hide-torn [data-twc-hidden] * { pointer-events: none !important; }
             html.twc-hide-torn #chatRoot [id^="chat_panel_button:"], html.twc-hide-torn #people_panel_button,
             html.twc-hide-torn #notes_settings_button { display: none !important; }`;
         (document.head || document.documentElement).appendChild(st);
