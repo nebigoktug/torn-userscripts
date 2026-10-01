@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Chat Panel
 // @namespace    https://github.com/nebigoktug
-// @version      0.4.0
+// @version      0.5.0
 // @description  A full-screen messenger-style view of Torn's Chat 3.1: one list of all your chats with last message, time, unread count and online dot, and a bubble view per chat. Torn's own chat does the work underneath: messages are read from what Torn already loads, and sending types into Torn's own message box.
 // @author       Nebigoktug
 // @license      MIT
@@ -34,6 +34,9 @@
  * puts your text into Torn's message box and taps Torn's send button. Every
  * one of these happens only because you tapped or scrolled.
  *
+ * Torn's own chat is hidden (a setting) but keeps running underneath; the
+ * panel has its own button in the chat bar, with the unread total on it.
+ *
  * Times are TCT, like the rest of Torn.
  */
 
@@ -44,7 +47,7 @@
     if (window.__twcRunning) return;
     window.__twcRunning = true;
 
-    const VERSION  = '0.4.0';
+    const VERSION  = '0.5.0';
     const REPO_URL = 'https://github.com/nebigoktug/torn-userscripts';
     const LS_CONVS = 'twc_convs';      // chat list (names, last message) for a quick start
     const LS_ME    = 'twc_me';
@@ -55,7 +58,7 @@
     const LS_PREFS = 'twc_prefs';
     const AUTHOR = { name: 'Nebigoktug', id: 3980062 };
     const touch = 'ontouchstart' in window;
-    const prefs = Object.assign({ size: 'm', enterSends: !touch, wallpaper: true, ffbs: true, pinned: [], muted: [] },
+    const prefs = Object.assign({ size: 'm', enterSends: !touch, wallpaper: true, ffbs: true, hideTorn: true, closeTornWins: true, pinned: [], muted: [] },
         (() => { try { return JSON.parse(localStorage.getItem(LS_PREFS) || '{}') || {}; } catch (e) { return {}; } })());
     const savePrefs = () => lsSet(LS_PREFS, JSON.stringify(prefs));
     const isPinned = (key) => prefs.pinned.includes(key);
@@ -362,12 +365,14 @@
             let card = document.getElementById('private_chat_card_' + c.id);
             if (!card) {
                 const people = document.getElementById('people_panel_button');
-                if (people) people.click();
+                if (people && !document.getElementById('private-channel-list')) { people.click(); openedPeople = true; }
                 card = await waitFor(() => document.getElementById('private_chat_card_' + c.id), 3000);
             }
             if (card) (card.querySelector('button, [role="button"]') || card).click();
         }
-        return waitFor(() => tornWindow(c), 4000);
+        const win = await waitFor(() => tornWindow(c), 4000);
+        if (win) { openedWins.add(String(c.id)); applyHideTorn(); }
+        return win;
     }
     // One request, only after a tap on a chat Torn hasn't loaded: the same
     // address Torn's chat uses. It goes through the fetch hook above, so the
@@ -751,11 +756,12 @@
         // No private chats known yet: open Torn's people panel so Torn loads them.
         if (!Array.from(convs.values()).some((c) => c.type === 'dm' && !c.stale)) {
             const people = document.getElementById('people_panel_button');
-            if (people && !document.getElementById('private-channel-list')) people.click();
+            if (people && !document.getElementById('private-channel-list')) { people.click(); openedPeople = true; }
         }
     }
     function closePanel() {
         if (!root) return;
+        closeOpenedWindows();
         root.remove();
         root = null;
         currentKey = null;
@@ -789,6 +795,42 @@
         root.style.top = v.offsetTop + 'px';
         root.style.height = v.height + 'px';
         root.style.bottom = 'auto';
+    }
+
+    // ------------------------------------------------------------ Torn's chat, hidden
+    // Everything in #chatRoot except the bar of buttons (Torn's chat windows,
+    // the people list, chat settings) is made invisible and untouchable, not
+    // removed: the panel still needs those windows to load and send.
+    function applyHideTorn() {
+        document.documentElement.classList.toggle('twc-hide-torn', !!prefs.hideTorn);
+        const chat = chatRoot();
+        const anchor = document.getElementById('people_panel_button') || document.getElementById('twc-btn');
+        if (!chat || !anchor || !chat.contains(anchor)) return;
+        for (let el = anchor.parentNode; el && el !== chat; el = el.parentNode) {
+            Array.from(el.parentNode.children).forEach((sib) => {
+                if (sib === el) return;
+                if (prefs.hideTorn) { if (!sib.hasAttribute('data-twc-hidden')) sib.setAttribute('data-twc-hidden', ''); }
+                else sib.removeAttribute('data-twc-hidden');
+            });
+        }
+    }
+    // Torn windows the panel opened; closed again when the panel closes.
+    const openedWins = new Set();
+    let openedPeople = false;
+    function closeOpenedWindows() {
+        if (!prefs.closeTornWins) { openedWins.clear(); return; }
+        openedWins.forEach((id) => {
+            const win = document.getElementById(id);
+            const x = win && chatRoot() && chatRoot().contains(win) && win.querySelector('[class*="closeIcon"]');
+            if (x) x.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+        });
+        openedWins.clear();
+        if (openedPeople) {
+            openedPeople = false;
+            const people = document.getElementById('private-channel-list');
+            const btn = document.getElementById('people_panel_button');
+            if (people && btn) btn.click();
+        }
     }
 
     // ------------------------------------------------------------ sheets (menus)
@@ -896,6 +938,8 @@
             ${row('Enter sends the message', chk('enterSends'))}
             ${row('Patterned background', chk('wallpaper'))}
             ${row('FF / BS next to names <small>(from FF/BS Badges, no extra requests)</small>', chk('ffbs'))}
+            ${row('Hide Torn\'s own chat <small>(it keeps running underneath; turn off to reach Torn\'s chat settings)</small>', chk('hideTorn'))}
+            ${row('Close the Torn chat windows the panel opened, when it closes', chk('closeTornWins'))}
             <div class="twc-support">Enjoying the panel? A Xanax or a few $ to
                 <a href="/profiles.php?XID=${AUTHOR.id}">${AUTHOR.name} [${AUTHOR.id}]</a> keeps it going ❤️</div>
             <button type="button" class="twc-done">Done</button>`);
@@ -909,6 +953,7 @@
             root.classList.remove('sz-s', 'sz-m', 'sz-l');
             root.classList.add('sz-' + prefs.size);
             root.classList.toggle('nowall', !prefs.wallpaper);
+            applyHideTorn();
             if (currentKey) { paintHeader(); renderMessages(); }
         });
     }
@@ -938,14 +983,9 @@
         let n = 0;
         convs.forEach((c) => { if (!c.stale && !isMuted(c.key)) n += Number(c.unread) || 0; });
         const label = n ? (n > 99 ? '99+' : String(n)) : '';
-        const els = [document.querySelector('[data-hub-item="twc"]')];
-        const hub = document.querySelector('[data-nth-hub]');
-        // The shared button shows our count only while it stands for us alone, or as a total in its menu.
-        if (hub) els.push(hub);
-        els.forEach((el) => {
-            if (!el) return;
-            if (label) el.setAttribute('data-twc-unread', label); else el.removeAttribute('data-twc-unread');
-        });
+        const el = document.getElementById('twc-btn');
+        if (!el) return;
+        if (label) el.setAttribute('data-twc-unread', label); else el.removeAttribute('data-twc-unread');
         injectBadgeStyles();
     }
     function injectBadgeStyles() {
@@ -953,12 +993,18 @@
         const st = document.createElement('style');
         st.id = 'twc-badge-styles';
         st.textContent = `
-            [data-nth-hub][data-twc-unread], [data-hub-item="twc"][data-twc-unread] { position: relative; }
-            [data-nth-hub][data-twc-unread]::after, [data-hub-item="twc"][data-twc-unread]::after {
+            #twc-btn { position: relative; display: flex; align-items: center; justify-content: center; }
+            #twc-btn svg { width: 22px; height: 22px; }
+            #twc-btn.twc-float { position: fixed; right: 12px; bottom: 160px; z-index: 2147483639; width: 44px; height: 44px; border-radius: 50%;
+                border: 1px solid rgba(255,255,255,.25); padding: 0; cursor: pointer; box-shadow: 0 3px 12px rgba(0,0,0,.35); }
+            #twc-btn[data-twc-unread]::after {
                 content: attr(data-twc-unread); position: absolute; top: -4px; right: -4px; min-width: 18px; height: 18px; padding: 0 5px;
-                border-radius: 9px; background: #25d366; color: #fff; font: 700 11px/18px Arial, sans-serif; text-align: center;
+                border-radius: 9px; background: #e5534b; color: #fff; font: 700 11px/18px Arial, sans-serif; text-align: center;
                 box-sizing: border-box; pointer-events: none; z-index: 1; }
-            [data-hub-item="twc"][data-twc-unread]::after { top: 50%; right: 10px; transform: translateY(-50%); }`;
+            /* Torn's own chat, hidden but still running underneath (it loads and sends for us). */
+            html.twc-hide-torn [data-twc-hidden] { opacity: 0 !important; pointer-events: none !important; }
+            html.twc-hide-torn #chatRoot [id^="chat_panel_button:"], html.twc-hide-torn #people_panel_button,
+            html.twc-hide-torn #notes_settings_button { display: none !important; }`;
         (document.head || document.documentElement).appendChild(st);
     }
     function sortedConvs() {
@@ -1180,129 +1226,36 @@
     // ------------------------------------------------------------ entry button
     const CHAT_SVG = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24"%CLS%>' +
         '<path fill="#fff" d="M12 3C7 3 3 6.6 3 11c0 2.2 1 4.2 2.7 5.6L5 21l4.2-2.2c.9.2 1.8.3 2.8.3 5 0 9-3.6 9-8s-4-8-9-8z"/></svg>';
-    /* =======================================================================
-     * SHARED FOOTER BUTTON  (nth-hub v1 — keep this block identical in every
-     * script). All of these scripts share one button in Torn's footer row.
-     * With one script installed it opens that script straight away; with
-     * more it opens a small menu. The page DOM is the only shared state, so
-     * it also works when the script manager sandboxes each script.
-     * ===================================================================== */
-    const HUB_GRID_SVG = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24">' +
-        '<g fill="#fff"><rect x="3" y="3" width="7.5" height="7.5" rx="1.5"/><rect x="13.5" y="3" width="7.5" height="7.5" rx="1.5"/>' +
-        '<rect x="3" y="13.5" width="7.5" height="7.5" rx="1.5"/><rect x="13.5" y="13.5" width="7.5" height="7.5" rx="1.5"/></g></svg>';
-    const HUB_MANY_BG = 'linear-gradient(to bottom, #6b6b6b, #3a3a3a)';
-    function hubStyles() {
-        if (document.getElementById('nth-hub-styles')) return;
-        const st = document.createElement('style');
-        st.id = 'nth-hub-styles';
-        st.textContent = `
-            #nth-hub-float {
-                position: fixed; right: 12px; bottom: 110px; z-index: 2147483646; width: 38px; height: 38px;
-                border-radius: 50%; border: 1px solid rgba(255,255,255,.25); padding: 0; cursor: pointer;
-                display: flex; align-items: center; justify-content: center; box-shadow: 0 3px 12px rgba(0,0,0,.35);
-            }
-            #nth-hub-float svg { width: 22px; height: 22px; }
-            #nth-hub-menu {
-                position: fixed; z-index: 2147483646; display: none; flex-direction: column; gap: 2px;
-                min-width: 190px; padding: 4px; background: #1f1f1f; border: 1px solid #444; border-radius: 8px;
-                box-shadow: 0 6px 20px rgba(0,0,0,.45); font: 13px Arial, Helvetica, sans-serif;
-            }
-            #nth-hub-menu.nth-open { display: flex; }
-            #nth-hub-menu button {
-                display: flex; align-items: center; gap: 10px; width: 100%; padding: 7px 8px; margin: 0;
-                background: transparent; border: 0; border-radius: 6px; color: #eee; font: inherit;
-                text-align: left; cursor: pointer;
-            }
-            #nth-hub-menu button:hover, #nth-hub-menu button:active { background: #333; }
-            #nth-hub-menu i {
-                display: flex; align-items: center; justify-content: center; flex: none;
-                width: 28px; height: 28px; border-radius: 6px;
-            }
-            #nth-hub-menu i svg { width: 18px; height: 18px; }
-        `;
-        (document.head || document.documentElement).appendChild(st);
-    }
-    function hubMenu() {
-        let menu = document.getElementById('nth-hub-menu');
-        if (menu) return menu;
-        menu = document.createElement('div');
-        menu.id = 'nth-hub-menu';
-        (document.body || document.documentElement).appendChild(menu);
-        document.addEventListener('click', (e) => {
-            const m = document.getElementById('nth-hub-menu');
-            if (m && m.classList.contains('nth-open') && !m.contains(e.target)) m.classList.remove('nth-open');
-        });
-        return menu;
-    }
-    function hubToggle(hub) {
-        const menu = hubMenu();
-        const items = menu.querySelectorAll('[data-hub-item]');
-        if (items.length === 1) { items[0].click(); return; }
-        if (menu.classList.contains('nth-open')) { menu.classList.remove('nth-open'); return; }
-        const r = hub.getBoundingClientRect();
-        menu.style.right = Math.max(8, window.innerWidth - r.right) + 'px';
-        menu.style.bottom = Math.max(8, window.innerHeight - r.top + 6) + 'px';
-        menu.classList.add('nth-open');
-    }
-    // One item looks like that script's own button; two or more show a grid.
-    function hubPaint(hub, ref) {
-        const items = hubMenu().querySelectorAll('[data-hub-item]');
-        const one = items.length === 1 ? items[0] : null;
-        const state = one ? 'one:' + one.getAttribute('data-hub-item') : 'many:' + items.length;
-        if (hub.getAttribute('data-hub-state') === state) return;
-        hub.setAttribute('data-hub-state', state);
-        hub.title = one ? one.textContent : 'Scripts';
-        hub.innerHTML = one ? one.querySelector('i').innerHTML : HUB_GRID_SVG;
-        const svg = hub.querySelector('svg');
-        const refSvg = ref && ref.querySelector('svg');
-        const cls = (refSvg && refSvg.className && refSvg.className.baseVal) || '';
-        if (svg && cls && hub.id !== 'nth-hub-float') svg.setAttribute('class', cls);
-        hub.style.setProperty('background', one ? one.getAttribute('data-hub-bg') : HUB_MANY_BG, 'important');
-    }
-    // item: { id, label, svg (markup), bg (CSS background), onOpen }
-    function hubMount(item) {
-        if (!document.body) return;
-        hubStyles();
-        const menu = hubMenu();
-        if (!menu.querySelector(`[data-hub-item="${item.id}"]`)) {
-            const b = document.createElement('button');
-            b.type = 'button';
-            b.setAttribute('data-hub-item', item.id);
-            b.setAttribute('data-hub-bg', item.bg);
-            b.innerHTML = `<i>${item.svg.replace('%CLS%', '')}</i><span></span>`;
-            b.querySelector('i').style.background = item.bg;
-            b.querySelector('span').textContent = item.label;
-            b.addEventListener('click', (e) => {
-                e.preventDefault();
-                e.stopPropagation();
-                menu.classList.remove('nth-open');
-                item.onOpen();
-            });
-            menu.appendChild(b);
-        }
-        const ref = document.getElementById('notes_panel_button') || document.getElementById('people_panel_button');
-        let hub = document.querySelector('[data-nth-hub]');
-        const inBar = !!(ref && ref.parentNode);
-        if (hub && (inBar ? hub.parentNode === ref.parentNode : hub.id === 'nth-hub-float')) { hubPaint(hub, ref); return; }
-        if (hub) hub.remove();
-        hub = document.createElement('button');
-        hub.type = 'button';
-        hub.setAttribute('data-nth-hub', '');
-        hub.addEventListener('click', (e) => { e.preventDefault(); e.stopPropagation(); hubToggle(hub); });
-        let placed = false;
-        if (inBar) {
-            hub.className = ref.className;
-            try { ref.parentNode.insertBefore(hub, ref); placed = true; } catch (e) { /* fall back to floating */ }
-        }
-        if (!placed) {
-            hub.id = 'nth-hub-float';
-            document.body.appendChild(hub);
-        }
-        hubPaint(hub, ref);
-    }
+    // Our own button in Torn's chat bar (not in the shared script menu), where
+    // Torn's chat buttons were. Without a chat bar it floats bottom-right.
     function mountButton() {
-        hubMount({ id: 'twc', label: 'Chat panel', svg: CHAT_SVG,
-            bg: 'linear-gradient(to bottom, #25c26e, #0b8a4a)', onOpen: openPanel });
+        if (!document.body) return;
+        const ref = document.getElementById('people_panel_button') || document.getElementById('notes_settings_button');
+        let btn = document.getElementById('twc-btn');
+        const placed = btn && (ref ? btn.parentNode === ref.parentNode : btn.classList.contains('twc-float'));
+        if (!placed) {
+            if (btn) btn.remove();
+            btn = document.createElement('button');
+            btn.type = 'button';
+            btn.id = 'twc-btn';
+            btn.title = 'Chats';
+            btn.innerHTML = CHAT_SVG.replace('%CLS%', '');
+            btn.addEventListener('click', (e) => { e.preventDefault(); e.stopPropagation(); if (root) requestClose(); else openPanel(); });
+            if (ref && ref.parentNode) {
+                btn.className = ref.className;
+                const svgCls = ref.querySelector('svg') && ref.querySelector('svg').className && ref.querySelector('svg').className.baseVal;
+                if (svgCls) btn.querySelector('svg').setAttribute('class', svgCls);
+                // First in the bar, before the shared script button and Torn's own.
+                const first = Array.from(ref.parentNode.children).find((el) => el.tagName === 'BUTTON' || el.querySelector('button')) || ref;
+                ref.parentNode.insertBefore(btn, first);
+            } else {
+                btn.classList.add('twc-float');
+                document.body.appendChild(btn);
+            }
+            btn.style.setProperty('background', 'linear-gradient(to bottom, #25c26e, #0b8a4a)', 'important');
+        }
+        injectBadgeStyles();
+        applyHideTorn();
         paintUnreadSoon();
     }
 
@@ -1314,8 +1267,19 @@
         new MutationObserver(() => {
             if (pending || document.hidden) return;
             pending = true;
-            setTimeout(() => { pending = false; mountButton(); }, 500);
+            setTimeout(() => { pending = false; mountButton(); }, 300);
         }).observe(document.body, { childList: true });
+        // Torn's chat renders after the page; hide its windows as they appear.
+        waitFor(() => chatRoot(), 15000).then((chat) => {
+            if (!chat) return;
+            let p2 = false;
+            new MutationObserver(() => {
+                if (p2) return;
+                p2 = true;
+                requestAnimationFrame(() => { p2 = false; mountButton(); });
+            }).observe(chat, { childList: true, subtree: true });
+            mountButton();
+        });
     }
     if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start); else start();
 })();
