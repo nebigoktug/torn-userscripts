@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Chat Panel
 // @namespace    https://github.com/nebigoktug
-// @version      0.3.0
+// @version      0.4.0
 // @description  A full-screen messenger-style view of Torn's Chat 3.1: one list of all your chats with last message, time, unread count and online dot, and a bubble view per chat. Torn's own chat does the work underneath: messages are read from what Torn already loads, and sending types into Torn's own message box.
 // @author       Nebigoktug
 // @license      MIT
@@ -44,14 +44,22 @@
     if (window.__twcRunning) return;
     window.__twcRunning = true;
 
-    const VERSION  = '0.3.0';
+    const VERSION  = '0.4.0';
     const REPO_URL = 'https://github.com/nebigoktug/torn-userscripts';
     const LS_CONVS = 'twc_convs';      // chat list (names, last message) for a quick start
     const LS_ME    = 'twc_me';
     const LS_EMOJI_SEEN = 'twc_emoji_seen';     // emoji -> how often it appeared in your chats
     const LS_EMOJI_UPTO = 'twc_emoji_upto';     // chat -> newest message already counted
     const LS_EMOJI_RECENT = 'twc_emoji_recent';
-    const DEFAULT_MAX_LEN = 840;                // Torn wiki: chat messages are capped at 840 characters
+    const DEFAULT_MAX_LEN = 840;
+    const LS_PREFS = 'twc_prefs';
+    const AUTHOR = { name: 'Nebigoktug', id: 3980062 };
+    const touch = 'ontouchstart' in window;
+    const prefs = Object.assign({ size: 'm', enterSends: !touch, wallpaper: true, ffbs: true, pinned: [], muted: [] },
+        (() => { try { return JSON.parse(localStorage.getItem(LS_PREFS) || '{}') || {}; } catch (e) { return {}; } })());
+    const savePrefs = () => lsSet(LS_PREFS, JSON.stringify(prefs));
+    const isPinned = (key) => prefs.pinned.includes(key);
+    const isMuted = (key) => prefs.muted.includes(key);                // Torn wiki: chat messages are capped at 840 characters
     const ROOM_ICONS = { faction: '🛡️', company: '🏢', global: '🌐', trade: '🔁' };
     const ROOM_COLORS = { faction: '#1f7a4d', company: '#5b6b7a', global: '#1f6fb2', trade: '#c46a1b' };
 
@@ -497,6 +505,28 @@
         return text.length;
     }
 
+    // ------------------------------------------------------------ FF/BS chips
+    // FF/BS Badges keeps FFScouter estimates in localStorage
+    // (pid -> [ff, bsRaw, bsHuman, ts]). We only read that cache: players it
+    // hasn't looked up show nothing, and no request is made.
+    let ffbsCache = null, ffbsReadAt = 0;
+    function ffbsFor(uid) {
+        if (!prefs.ffbs || !uid) return null;
+        if (!ffbsCache || Date.now() - ffbsReadAt > 60000) {
+            ffbsReadAt = Date.now();
+            try { ffbsCache = JSON.parse(localStorage.getItem('ffbs_stats_cache') || 'null') || {}; } catch (e) { ffbsCache = {}; }
+        }
+        const e = ffbsCache[uid];
+        return Array.isArray(e) && (e[0] != null || e[2]) ? { ff: e[0], bs: e[2] } : null;
+    }
+    function ffbsChip(uid) {
+        const v = ffbsFor(uid);
+        if (!v) return '';
+        const ff = Number(v.ff);
+        const tier = isNaN(ff) ? 'g' : ff < 1.5 ? 'ok' : ff < 2.25 ? 'y' : ff < 3 ? 'o' : 'r';
+        return `<span class="twc-ff ${tier}" title="FairFight / estimated battle stats (FF/BS Badges)">${isNaN(ff) ? '' : 'FF ' + ff.toFixed(2)}${v.bs ? (isNaN(ff) ? '' : ' · ') + esc(v.bs) : ''}</span>`;
+    }
+
     // ------------------------------------------------------------ formatting
     const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
     const linkify = (s) => esc(s)
@@ -643,6 +673,40 @@
         #twc-root .twc-pick { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; color: var(--muted); text-align: center; padding: 20px; }
         #twc-root .twc-foot { padding: 6px 12px; font-size: 11px; color: var(--muted); border-top: 1px solid var(--line); flex: none; }
         #twc-root .twc-foot a { color: var(--muted); }
+        #twc-root.sz-s { font-size: 13.5px; } #twc-root.sz-s .twc-b .twc-txt { font-size: 13px; }
+        #twc-root.sz-l { font-size: 17px; } #twc-root.sz-l .twc-b .twc-txt { font-size: 17px; } #twc-root.sz-l .twc-prev { font-size: 15px; }
+        #twc-root.nowall .twc-msgs { background-image: none; }
+        #twc-root .twc-ico { font-style: normal; font-size: 13px; opacity: .8; }
+        #twc-root .twc-item.muted .twc-badge { background: var(--muted); }
+        #twc-root .twc-fromrow { display: flex; align-items: baseline; gap: 6px; flex-wrap: wrap; }
+        #twc-root .twc-ff { display: inline-block; padding: 0 5px; border-radius: 4px; font-size: 10.5px; font-weight: 700; line-height: 16px;
+            background: rgba(134,150,160,.18); color: var(--muted) !important; white-space: nowrap; }
+        #twc-root .twc-ff.ok { background: rgba(46,204,64,.18); color: #3ccf6a !important; }
+        #twc-root .twc-ff.y { background: rgba(240,178,50,.18); color: #e0a526 !important; }
+        #twc-root .twc-ff.o { background: rgba(255,140,0,.18); color: #ff8c1a !important; }
+        #twc-root .twc-ff.r { background: rgba(229,83,75,.18); color: #e5534b !important; }
+        #twc-root .twc-ctitle small .twc-ff { margin-left: 2px; vertical-align: 1px; }
+        #twc-root .twc-sheet { position: absolute; inset: 0; z-index: 5; background: rgba(0,0,0,.45); display: flex; align-items: flex-end; justify-content: center; }
+        #twc-root .twc-sheet-box { width: 100%; max-width: 480px; max-height: 80%; overflow-y: auto; background: var(--panel); border-radius: 14px 14px 0 0;
+            padding: 8px 0 calc(10px + env(safe-area-inset-bottom)); box-shadow: 0 -4px 20px rgba(0,0,0,.35); animation: twc-up .16s ease-out; }
+        @media (min-width: 760px) { #twc-root .twc-sheet { align-items: center; } #twc-root .twc-sheet-box { border-radius: 14px; } }
+        @keyframes twc-up { from { transform: translateY(30px); opacity: .5; } }
+        #twc-root .twc-sheet-title { padding: 8px 18px 10px; font-weight: 600; color: var(--muted); font-size: 13px; }
+        #twc-root .twc-sheet-box > button { display: flex; align-items: center; gap: 14px; width: 100%; padding: 13px 18px; background: none; border: 0;
+            color: var(--fg); font: inherit; text-align: left; cursor: pointer; }
+        #twc-root .twc-sheet-box > button:hover { background: var(--head); }
+        #twc-root .twc-sheet-box > button i { font-style: normal; width: 22px; text-align: center; }
+        #twc-root .twc-set { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 11px 18px; cursor: pointer; }
+        #twc-root .twc-set small { display: block; font-size: 11.5px; color: var(--muted); }
+        #twc-root .twc-set select { background: var(--head); color: var(--fg); border: 0; border-radius: 6px; padding: 5px 8px; font: inherit; }
+        #twc-root .twc-set input[type="checkbox"] { width: 20px; height: 20px; accent-color: var(--accent); }
+        #twc-root .twc-support { margin: 8px 18px 4px; padding: 10px 12px; border-radius: 10px; background: var(--head); font-size: 13px; line-height: 1.45; }
+        #twc-root .twc-support a { color: var(--link) !important; font-weight: 600; }
+        #twc-root .twc-done { display: block; margin: 10px 18px 2px auto; padding: 8px 18px; border: 0; border-radius: 18px; background: var(--accent); color: #fff !important; font: inherit; font-weight: 600; cursor: pointer; }
+        #twc-root .twc-toast { position: absolute; left: 50%; bottom: 90px; transform: translateX(-50%); z-index: 6; padding: 8px 14px; border-radius: 18px;
+            background: rgba(0,0,0,.8); color: #fff !important; font-size: 13px; }
+        /* Phones: long-press opens our menu (Copy is in it), so no text selection fighting it. */
+        @media (pointer: coarse) { #twc-root .twc-b, #twc-root .twc-item { -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; } }
         `;
         (document.head || document.documentElement).appendChild(st);
     }
@@ -655,16 +719,27 @@
         root.id = 'twc-root';
         // "chat-box" makes FF/BS Badges skip the names in here, as in Torn's chat.
         root.className = 'chat-box';
+        root.classList.add('sz-' + prefs.size);
+        root.classList.toggle('nowall', !prefs.wallpaper);
         root.innerHTML = `
             <section class="twc-list">
-                <div class="twc-head"><h1>Chats</h1><button class="twc-ib" data-a="close" title="Close">✕</button></div>
+                <div class="twc-head"><h1>Chats</h1><button class="twc-ib" data-a="settings" title="Settings">⚙</button><button class="twc-ib" data-a="close" title="Close">✕</button></div>
                 <div class="twc-search"><input type="search" placeholder="Search" autocomplete="off"></div>
                 <div class="twc-items"></div>
-                <div class="twc-foot">Times in TCT · Torn Chat Panel v${VERSION} · <a href="${REPO_URL}" target="_blank" rel="noopener">GitHub</a></div>
+                <div class="twc-foot">Times in TCT · Torn Chat Panel v${VERSION} · <a href="${REPO_URL}" target="_blank" rel="noopener">GitHub</a>
+                    · <a href="/profiles.php?XID=${AUTHOR.id}">Support ❤️</a></div>
             </section>
             <section class="twc-conv"><div class="twc-pick"><div style="font-size:40px">💬</div>Pick a chat</div></section>`;
         document.body.appendChild(root);
-        root.querySelector('[data-a="close"]').addEventListener('click', closePanel);
+        root.querySelector('[data-a="close"]').addEventListener('click', requestClose);
+        root.querySelector('[data-a="settings"]').addEventListener('click', openSettings);
+        // Long-press (or right-click) a chat: pin / mute.
+        onLongPress(root.querySelector('.twc-items'), '[data-key]', (it) => chatSheet(it.getAttribute('data-key')));
+        history.pushState({ twc: 1 }, '');
+        navDepth = 1;
+        window.addEventListener('popstate', onPop);
+        fitViewport();
+        if (window.visualViewport) window.visualViewport.addEventListener('resize', fitViewport);
         const search = root.querySelector('.twc-search input');
         search.addEventListener('input', () => { query = search.value.trim().toLowerCase(); renderList(); });
         root.querySelector('.twc-items').addEventListener('click', (e) => {
@@ -684,13 +759,161 @@
         root.remove();
         root = null;
         currentKey = null;
+        navDepth = 0;
         document.removeEventListener('keydown', onKey, true);
+        window.removeEventListener('popstate', onPop);
+        if (window.visualViewport) window.visualViewport.removeEventListener('resize', fitViewport);
     }
+    // The phone's back button: conversation -> list -> close. Each level is a
+    // history entry of our own, so Back never leaves the Torn page by surprise.
+    let navDepth = 0;
+    const narrow = () => window.innerWidth < 760;
+    function onPop(e) {
+        const depth = (e.state && e.state.twc) || 0;
+        if (depth < 2 && currentKey && narrow()) backToList(true);
+        if (depth < 1) closePanel();
+        else navDepth = depth;
+    }
+    function requestClose() { if (navDepth > 0) history.go(-navDepth); else closePanel(); }
+    function requestBack() { if (navDepth >= 2) history.back(); else backToList(); }
     function onKey(e) {
         if (e.key !== 'Escape' || !root) return;
-        if (currentKey && window.innerWidth < 760) backToList(); else closePanel();
+        const sheet = root.querySelector('.twc-sheet');
+        if (sheet) { sheet.remove(); return; }
+        if (currentKey && narrow()) requestBack(); else requestClose();
     }
-    function backToList() {
+    // Keep the compose bar above the on-screen keyboard.
+    function fitViewport() {
+        if (!root || !window.visualViewport) return;
+        const v = window.visualViewport;
+        root.style.top = v.offsetTop + 'px';
+        root.style.height = v.height + 'px';
+        root.style.bottom = 'auto';
+    }
+
+    // ------------------------------------------------------------ sheets (menus)
+    function onLongPress(container, sel, fn) {
+        let timer = null, sx = 0, sy = 0, fired = false;
+        container.addEventListener('touchstart', (e) => {
+            const t = e.target.closest(sel);
+            if (!t) return;
+            fired = false;
+            sx = e.touches[0].clientX; sy = e.touches[0].clientY;
+            timer = setTimeout(() => { fired = true; timer = null; if (navigator.vibrate) navigator.vibrate(15); fn(t, e); }, 480);
+        }, { passive: true });
+        const cancel = () => { clearTimeout(timer); timer = null; };
+        container.addEventListener('touchmove', (e) => {
+            if (timer && (Math.abs(e.touches[0].clientX - sx) > 10 || Math.abs(e.touches[0].clientY - sy) > 10)) cancel();
+        }, { passive: true });
+        container.addEventListener('touchend', (e) => { cancel(); if (fired) { e.preventDefault(); fired = false; } });
+        container.addEventListener('contextmenu', (e) => {
+            const t = e.target.closest(sel);
+            if (!t || e.target.closest('a')) return;
+            e.preventDefault();
+            fn(t, e);
+        });
+    }
+    function sheet(title, actions) {
+        if (!root) return;
+        const old = root.querySelector('.twc-sheet');
+        if (old) old.remove();
+        const el = document.createElement('div');
+        el.className = 'twc-sheet';
+        el.innerHTML = `<div class="twc-sheet-box">${title ? `<div class="twc-sheet-title">${title}</div>` : ''}` +
+            actions.map((a, i) => `<button type="button" data-i="${i}">${a.icon ? `<i>${a.icon}</i>` : ''}${esc(a.label)}</button>`).join('') + '</div>';
+        root.appendChild(el);
+        el.addEventListener('click', (e) => {
+            const b = e.target.closest('[data-i]');
+            if (!b && e.target !== el) return;
+            el.remove();
+            if (b) actions[Number(b.getAttribute('data-i'))].run();
+        });
+    }
+    function chatSheet(key) {
+        const c = convs.get(key);
+        if (!c) return;
+        const toggle = (list, on) => { const i = prefs[list].indexOf(key); if (on && i < 0) prefs[list].push(key); if (!on && i >= 0) prefs[list].splice(i, 1); savePrefs(); renderList(); paintUnread(); };
+        sheet(esc(titleOf(c)), [
+            { icon: '📌', label: isPinned(key) ? 'Unpin' : 'Pin to top', run: () => toggle('pinned', !isPinned(key)) },
+            { icon: '🔕', label: isMuted(key) ? 'Unmute' : 'Mute (no unread count on the button)', run: () => toggle('muted', !isMuted(key)) },
+            c.type === 'dm' ? { icon: '👤', label: 'Open profile', run: () => { location.href = '/profiles.php?XID=' + encodeURIComponent(c.id); } } : null,
+        ].filter(Boolean));
+    }
+    function copyText(t) {
+        const done = () => showToast('Copied');
+        if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, () => fallback());
+        else fallback();
+        function fallback() {
+            const ta = document.createElement('textarea');
+            ta.value = t; ta.style.position = 'fixed'; ta.style.opacity = '0';
+            document.body.appendChild(ta); ta.select();
+            try { document.execCommand('copy'); done(); } catch (e) {}
+            ta.remove();
+        }
+    }
+    function showToast(text) {
+        if (!root) return;
+        const t = document.createElement('div');
+        t.className = 'twc-toast';
+        t.textContent = text;
+        root.appendChild(t);
+        setTimeout(() => t.remove(), 1400);
+    }
+    function messageSheet(bubble) {
+        const c = convs.get(currentKey);
+        const b = c && box(c.key);
+        const m = b && b.list.find((x) => x.messageId === bubble.getAttribute('data-id'));
+        if (!m) return;
+        const uid = m.sender && m.sender.userId;
+        const mine = isMine(c.key, m);
+        const link = (String(m.content).match(/\bhttps?:\/\/[^\s<]+/) || [])[0];
+        sheet('', [
+            !mine && m.sender && m.sender.name ? { icon: '↩️', label: 'Reply to ' + m.sender.name, run: () => insertText('@' + m.sender.name + ' ') } : null,
+            { icon: '📋', label: 'Copy text', run: () => copyText(m.content) },
+            link ? { icon: '🔗', label: 'Open link', run: () => window.open(link, '_blank', 'noopener') } : null,
+            uid && !mine ? { icon: '👤', label: 'Open ' + (m.sender.name || 'profile'), run: () => { location.href = '/profiles.php?XID=' + encodeURIComponent(uid); } } : null,
+            uid && !mine && c.type === 'room' ? { icon: '💬', label: 'Message privately', run: () => { const k = dmKey(uid); conv(k, { type: 'dm', id: String(uid), name: m.sender.name, avatar: m.sender.avatar }); openConv(k); } } : null,
+        ].filter(Boolean));
+    }
+    function insertText(t) {
+        const ta = root && root.querySelector('.twc-compose textarea');
+        if (!ta) return;
+        ta.value = (ta.value && !/\s$/.test(ta.value) ? ta.value + ' ' : ta.value) + t;
+        ta.dispatchEvent(new Event('input'));
+        ta.focus();
+        ta.selectionStart = ta.selectionEnd = ta.value.length;
+    }
+
+    // ------------------------------------------------------------ settings
+    function openSettings() {
+        const row = (label, html) => `<label class="twc-set"><span>${label}</span>${html}</label>`;
+        const sel = (k, opts) => `<select data-k="${k}">${opts.map(([v, t]) => `<option value="${v}" ${String(prefs[k]) === String(v) ? 'selected' : ''}>${t}</option>`).join('')}</select>`;
+        const chk = (k) => `<input type="checkbox" data-k="${k}" ${prefs[k] ? 'checked' : ''}>`;
+        sheet('Settings', []);
+        const box_ = root.querySelector('.twc-sheet-box');
+        box_.insertAdjacentHTML('beforeend', `
+            ${row('Text size', sel('size', [['s', 'Small'], ['m', 'Medium'], ['l', 'Large']]))}
+            ${row('Enter sends the message', chk('enterSends'))}
+            ${row('Patterned background', chk('wallpaper'))}
+            ${row('FF / BS next to names <small>(from FF/BS Badges, no extra requests)</small>', chk('ffbs'))}
+            <div class="twc-support">Enjoying the panel? A Xanax or a few $ to
+                <a href="/profiles.php?XID=${AUTHOR.id}">${AUTHOR.name} [${AUTHOR.id}]</a> keeps it going ❤️</div>
+            <button type="button" class="twc-done">Done</button>`);
+        const sh = root.querySelector('.twc-sheet');
+        sh.addEventListener('click', (e) => { if (e.target.closest('.twc-done')) sh.remove(); });
+        box_.addEventListener('change', (e) => {
+            const k = e.target.getAttribute('data-k');
+            if (!k) return;
+            prefs[k] = e.target.type === 'checkbox' ? e.target.checked : e.target.value;
+            savePrefs();
+            root.classList.remove('sz-s', 'sz-m', 'sz-l');
+            root.classList.add('sz-' + prefs.size);
+            root.classList.toggle('nowall', !prefs.wallpaper);
+            if (currentKey) { paintHeader(); renderMessages(); }
+        });
+    }
+    function backToList(fromPop) {
+        if (!fromPop && navDepth >= 2) { history.back(); return; }
         currentKey = null;
         if (!root) return;
         root.classList.remove('open');
@@ -700,15 +923,49 @@
 
     let renderQueued = false;
     function renderSoon() {
+        paintUnreadSoon();
         if (renderQueued || !root) return;
         renderQueued = true;
         requestAnimationFrame(() => { renderQueued = false; renderList(); paintHeader(); });
+    }
+    // Total unread (muted chats left out) on the footer button and its menu entry.
+    let unreadTimer = null;
+    function paintUnreadSoon() {
+        if (unreadTimer) return;
+        unreadTimer = setTimeout(() => { unreadTimer = null; paintUnread(); }, 300);
+    }
+    function paintUnread() {
+        let n = 0;
+        convs.forEach((c) => { if (!c.stale && !isMuted(c.key)) n += Number(c.unread) || 0; });
+        const label = n ? (n > 99 ? '99+' : String(n)) : '';
+        const els = [document.querySelector('[data-hub-item="twc"]')];
+        const hub = document.querySelector('[data-nth-hub]');
+        // The shared button shows our count only while it stands for us alone, or as a total in its menu.
+        if (hub) els.push(hub);
+        els.forEach((el) => {
+            if (!el) return;
+            if (label) el.setAttribute('data-twc-unread', label); else el.removeAttribute('data-twc-unread');
+        });
+        injectBadgeStyles();
+    }
+    function injectBadgeStyles() {
+        if (document.getElementById('twc-badge-styles')) return;
+        const st = document.createElement('style');
+        st.id = 'twc-badge-styles';
+        st.textContent = `
+            [data-nth-hub][data-twc-unread], [data-hub-item="twc"][data-twc-unread] { position: relative; }
+            [data-nth-hub][data-twc-unread]::after, [data-hub-item="twc"][data-twc-unread]::after {
+                content: attr(data-twc-unread); position: absolute; top: -4px; right: -4px; min-width: 18px; height: 18px; padding: 0 5px;
+                border-radius: 9px; background: #25d366; color: #fff; font: 700 11px/18px Arial, sans-serif; text-align: center;
+                box-sizing: border-box; pointer-events: none; z-index: 1; }
+            [data-hub-item="twc"][data-twc-unread]::after { top: 50%; right: 10px; transform: translateY(-50%); }`;
+        (document.head || document.documentElement).appendChild(st);
     }
     function sortedConvs() {
         return Array.from(convs.values())
             .filter((c) => c.type && c.id)
             .filter((c) => !query || titleOf(c).toLowerCase().includes(query) || (c.last && String(c.last.content).toLowerCase().includes(query)))
-            .sort((a, b) => ((b.last && b.last.createdAt) || 0) - ((a.last && a.last.createdAt) || 0));
+            .sort((a, b) => (isPinned(b.key) - isPinned(a.key)) || (((b.last && b.last.createdAt) || 0) - ((a.last && a.last.createdAt) || 0)));
     }
     function renderList() {
         const el = root && root.querySelector('.twc-items');
@@ -722,11 +979,14 @@
             const l = c.last;
             const who = l && c.type === 'room' && l.senderName ? (l.senderId === myId ? 'You' : l.senderName) + ': '
                 : l && c.type === 'dm' && String(l.senderId) !== c.id ? 'You: ' : '';
-            return `<div class="twc-item${c.unread ? ' unread' : ''}${c.key === currentKey ? ' sel' : ''}" data-key="${esc(c.key)}">
+            const muted = isMuted(c.key);
+            return `<div class="twc-item${c.unread ? ' unread' : ''}${muted ? ' muted' : ''}${c.key === currentKey ? ' sel' : ''}" data-key="${esc(c.key)}">
                 ${avatarHtml(c)}
                 <div class="twc-mid">
                     <div class="twc-row"><span class="twc-name">${esc(titleOf(c))}</span><span class="twc-time">${listTime(l && l.createdAt)}</span></div>
-                    <div class="twc-row"><span class="twc-prev">${l ? esc(who + String(l.content).replace(/\s+/g, ' ')) : '&nbsp;'}</span>${c.unread ? `<span class="twc-badge">${c.unread > 99 ? '99+' : c.unread}</span>` : ''}</div>
+                    <div class="twc-row"><span class="twc-prev">${l ? esc(who + String(l.content).replace(/\s+/g, ' ')) : '&nbsp;'}</span>` +
+                    `${muted ? '<i class="twc-ico" title="Muted">🔕</i>' : ''}${isPinned(c.key) ? '<i class="twc-ico" title="Pinned">📌</i>' : ''}` +
+                    `${c.unread ? `<span class="twc-badge">${c.unread > 99 ? '99+' : c.unread}</span>` : ''}</div>
                 </div></div>`;
         }).join('');
     }
@@ -734,8 +994,10 @@
     function openConv(key) {
         const c = convs.get(key);
         if (!c || !root) return;
+        if (narrow() && navDepth === 1) { history.pushState({ twc: 2 }, ''); navDepth = 2; }
         currentKey = key;
         olderPending = 0;
+        ffbsReadAt = 0;   // pick up players FF/BS Badges looked up since
         root.classList.add('open');
         const max = (c.rules && c.rules.maxLength) || DEFAULT_MAX_LEN;
         root.querySelector('.twc-conv').innerHTML = `
@@ -756,8 +1018,9 @@
                 <button class="twc-send" title="Send">➤</button>
             </div>`;
         const conv = root.querySelector('.twc-conv');
-        conv.querySelector('[data-a="back"]').addEventListener('click', backToList);
-        conv.querySelector('[data-a="close2"]').addEventListener('click', closePanel);
+        conv.querySelector('[data-a="back"]').addEventListener('click', requestBack);
+        conv.querySelector('[data-a="close2"]').addEventListener('click', requestClose);
+        onLongPress(conv.querySelector('.twc-msgs'), '.twc-b[data-id]', (b) => messageSheet(b));
         const ta = conv.querySelector('textarea');
         const count = conv.querySelector('.twc-count');
         ta.addEventListener('input', () => {
@@ -774,7 +1037,7 @@
         ta.dispatchEvent(new Event('input'));
         ta.addEventListener('keydown', (e) => {
             // Enter sends on desktop; on phones Enter is a new line, like WhatsApp.
-            if (e.key === 'Enter' && !e.shiftKey && !('ontouchstart' in window)) { e.preventDefault(); doSend(); }
+            if (e.key === 'Enter' && !e.shiftKey && prefs.enterSends) { e.preventDefault(); doSend(); }
         });
         conv.querySelector('.twc-send').addEventListener('click', doSend);
         const box_ = conv.querySelector('.twc-msgs');
@@ -802,7 +1065,8 @@
         if (!c || !t) return;
         const status = c.type === 'dm' ? (c.online ? String(c.online).toLowerCase() : '') : (c.rules && c.rules.cooldown ? `${c.rules.cooldown}s between messages` : '');
         const name = c.type === 'dm' ? `<a href="/profiles.php?XID=${encodeURIComponent(c.id)}">${esc(titleOf(c))}</a>` : esc(titleOf(c));
-        const html = `<b>${name}</b>${status ? `<small>${esc(status)}</small>` : ''}`;
+        const chip = c.type === 'dm' ? ffbsChip(c.id) : '';
+        const html = `<b>${name}</b>${status || chip ? `<small>${esc(status)}${status && chip ? ' ' : ''}${chip}</small>` : ''}`;
         if (t.innerHTML !== html) t.innerHTML = html;
     }
     function showErr(text) {
@@ -842,13 +1106,13 @@
             lastAt = at;
             const jumbo = isJumbo(m.content);
             const from = room && !mine && first && m.sender
-                ? `<a class="twc-from" href="/profiles.php?XID=${encodeURIComponent(uid)}" style="color:${nameColor(uid)} !important">${esc(m.sender.name)}</a>` : '';
+                ? `<span class="twc-fromrow"><a class="twc-from" href="/profiles.php?XID=${encodeURIComponent(uid)}" style="color:${nameColor(uid)} !important">${esc(m.sender.name)}</a>${ffbsChip(uid)}</span>` : '';
             const av = room && !mine && first && m.sender
                 ? `<a class="twc-sav" href="/profiles.php?XID=${encodeURIComponent(uid)}">${m.sender.avatar ? `<img src="${esc(m.sender.avatar)}" alt="" loading="lazy">` : esc(String(m.sender.name || '?').slice(0, 1))}</a>` : '';
             const tick = mine ? (m.pending ? '<i class="twc-tick">🕓</i>' : m.failed ? '<i class="twc-tick bad">!</i>' : '<i class="twc-tick">✓</i>') : '';
             const cls = ['twc-b', mine ? 'mine' : '', first ? 'first' : '', room && !mine ? 'indent' : '', jumbo ? 'jumbo' : '',
                 m.pending ? 'pending' : '', m.failed ? 'failed' : '', !mine && mentionsMe(m.content) ? 'mention' : ''].filter(Boolean).join(' ');
-            html += `<div class="${cls}">${av}${from}<span class="twc-txt">${linkify(m.content)}</span>` +
+            html += `<div class="${cls}" data-id="${esc(m.messageId)}">${av}${from}<span class="twc-txt">${linkify(m.content)}</span>` +
                 `<span class="twc-meta">${m.createdAt ? tct(m.createdAt) : ''}${tick}</span></div>`;
         });
         el.innerHTML = html;
@@ -1039,6 +1303,7 @@
     function mountButton() {
         hubMount({ id: 'twc', label: 'Chat panel', svg: CHAT_SVG,
             bg: 'linear-gradient(to bottom, #25c26e, #0b8a4a)', onOpen: openPanel });
+        paintUnreadSoon();
     }
 
     function start() {
