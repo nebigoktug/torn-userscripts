@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Chat Inspector (dev tool)
 // @namespace    https://github.com/nebigoktug
-// @version      0.3.0
+// @version      0.3.1
 // @description  Developer tool: records how Torn's chat is built (page structure) and what its live messages look like, with all message text and names removed, so a chat reskin can be written against it. Makes no requests; nothing leaves your device unless you copy or save the report yourself.
 // @author       Nebigoktug
 // @license      MIT
@@ -31,7 +31,7 @@
     if (window.__tciRunning) return;
     window.__tciRunning = true;
 
-    const VERSION = '0.3.0';
+    const VERSION = '0.3.1';
     const MAX_SAMPLES = 3;          // kept per distinct message shape
     const MAX_SHAPES = 300;
     const CHAT_URL_RE = /chat|sendbird|message|socket|ws\b|pusher|centrifug/i;
@@ -40,7 +40,7 @@
     // Field names whose short values are protocol words, not user text.
     const KEEP_KEY_RE = /^(type|event|action|kind|op|cmd|command|method|channeltype|roomtype|status|state|category|role|code|path|url|endpoint)$/i;
     function redact(v, key, depth) {
-        if (depth > 8) return '…';
+        if (depth > 20) return '…';
         if (v === null) return null;
         if (Array.isArray(v)) {
             const out = v.slice(0, 3).map((x) => redact(x, key, depth + 1));
