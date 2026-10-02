@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Chat Panel
 // @namespace    https://github.com/nebigoktug
-// @version      1.1.1
+// @version      1.1.3
 // @description  A full-screen messenger-style view of Torn's Chat 3.1: one list of all your chats with last message, time, unread count and online dot, and a bubble view per chat. Torn's own chat does the work underneath: messages are read from what Torn already loads, and sending types into Torn's own message box.
 // @author       Nebigoktug
 // @license      MIT
@@ -27,7 +27,8 @@
  * window was already open, for example), the script asks Torn's chat for
  * that chat's latest 50 messages once — the same request Torn's own chat
  * makes. And when you have read a chat to the bottom, it first lets Torn's
- * own window mark it read; only if Torn doesn't, it sends Torn's own "read"
+ * own window mark it read (scrolled to the bottom, then the ✕ on Torn's
+ * "new messages" pill); only if Torn doesn't, it sends Torn's own "read"
  * request for that chat once, so the unread count doesn't come back on the
  * next page. Nothing is requested in the background.
  *
@@ -50,7 +51,7 @@
     if (window.__twcRunning) return;
     window.__twcRunning = true;
 
-    const VERSION  = '1.1.1';
+    const VERSION  = '1.1.3';
     const REPO_URL = 'https://github.com/nebigoktug/torn-userscripts';
     const LS_CONVS = 'twc_convs';      // chat list (names, last message) for a quick start
     const LS_ME    = 'twc_me';
@@ -466,17 +467,23 @@
     const readFails = { dm: 0, rooms: 0 };
     function needRead(key) { const r = readState.get(key) || {}; r.pending = true; readState.set(key, r); }
     function readDone(key) { const r = readState.get(key); if (r) r.pending = false; }
-    async function markReadIfSeen() {
+    function markReadIfSeen() {
         const c = convs.get(currentKey);
         const el = root && root.querySelector('.twc-msgs');
-        const r = c && readState.get(c.key);
-        if (!c || !el || !r || !r.pending || r.busy || document.hidden) return;
+        if (!c || !el || document.hidden) return;
         if (el.scrollHeight - el.scrollTop - el.clientHeight > 120) return;
-        if (Date.now() - (r.lastSent || 0) < 10000) return;
+        markRead(c, false);
+    }
+    // force: the ✕ on the unread pill (read everything without scrolling through it).
+    async function markRead(c, force) {
+        const r = readState.get(c.key);
+        if (!r || !r.pending || r.busy) return;
+        if (!force && Date.now() - (r.lastSent || 0) < 10000) return;
         r.busy = true;
         try {
             // First let Torn do it: its window at the bottom is what Torn itself reacts to.
-            const win = tornWindow(c);
+            // (Right after opening a chat, Torn's window may still be on its way.)
+            const win = tornWindow(c) || await waitFor(() => tornWindow(c), 3000);
             if (win) win.querySelectorAll('*').forEach((x) => {
                 if (x.scrollHeight > x.clientHeight + 4 && /(auto|scroll)/.test(getComputedStyle(x).overflowY)) {
                     x.scrollTop = x.scrollHeight;
@@ -484,6 +491,16 @@
                 }
             });
             await waitFor(() => !r.pending, 1500);
+            // Then Torn's own "N new messages ✕" pill: its ✕ clears the unread state.
+            if (r.pending && win) {
+                const pill = Array.from(win.querySelectorAll('div, span, button')).find((x) =>
+                    /\bnew messages?/i.test(x.textContent || '') && x.textContent.length < 40 && x.querySelector('button, svg, [role="button"]'));
+                const x = pill && Array.from(pill.querySelectorAll('button, [role="button"], svg')).pop();
+                if (x) {
+                    (x.closest('button, [role="button"]') || x).dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+                    await waitFor(() => !r.pending, 1500);
+                }
+            }
             const type = c.type === 'dm' ? 'dm' : 'rooms';
             if (r.pending && readFails[type] < 2) {
                 r.lastSent = Date.now();
@@ -827,9 +844,12 @@
         #twc-root .twc-unread::before, #twc-root .twc-unread::after { content: ''; flex: 1; height: 1px; background: rgba(229,83,75,.55); }
         #twc-root .twc-unread span { padding: 3px 10px; border-radius: 999px; background: rgba(229,83,75,.16); color: #ff8a80 !important;
             font-size: 0.72rem; font-weight: 600; white-space: nowrap; }
-        #twc-root .twc-jump { position: absolute; right: 14px; bottom: 64px; height: 34px; padding: 0 14px; border-radius: 17px; border: 0; cursor: pointer;
-            background: rgba(32,44,51,.92); color: #e9edef !important; font-size: 13px; font-weight: 600; line-height: 34px; box-shadow: 0 2px 8px rgba(0,0,0,.35);
+        #twc-root .twc-jump { position: absolute; right: 14px; bottom: 64px; height: 34px; display: flex; align-items: stretch; border-radius: 17px; overflow: hidden;
+            background: rgba(32,44,51,.92); box-shadow: 0 2px 8px rgba(0,0,0,.35);
             -webkit-backdrop-filter: blur(6px); backdrop-filter: blur(6px); opacity: 0; transform: translateY(6px); transition: opacity .22s, transform .22s; }
+        #twc-root .twc-jump button { border: 0; background: none; cursor: pointer; color: #e9edef !important; font-size: 13px; font-weight: 600; line-height: 34px; }
+        #twc-root .twc-jumpgo { padding: 0 8px 0 14px; }
+        #twc-root .twc-jumpx { padding: 0 12px 0 8px; border-left: 1px solid rgba(255,255,255,.12) !important; color: #8696a0 !important; }
         #twc-root .twc-jump.on { opacity: 1; transform: none; }
         #twc-root .twc-jump span { display: inline-block; min-width: 18px; margin-left: 4px; padding: 0 6px; border-radius: 9px; background: var(--badge);
             color: #fff !important; font-size: 11px; line-height: 18px; vertical-align: 1px; }
@@ -1313,7 +1333,8 @@
             </div>
             <div class="twc-msgwrap"><div class="twc-msgs"></div>
                 <button type="button" class="twc-down" hidden title="Newest messages"><b hidden></b>⌄</button>
-                <button type="button" class="twc-jump" hidden title="First unread message">↑ <span></span></button></div>
+                <div class="twc-jump" hidden><button type="button" class="twc-jumpgo" title="First unread message">↑ <span></span></button>` +
+                `<button type="button" class="twc-jumpx" title="Mark all as read">✕</button></div></div>
             <div class="twc-err" hidden></div>
             <div class="twc-emoji" hidden><div class="twc-etabs"></div><div class="twc-egrid"></div></div>
             <div class="twc-compose">
@@ -1371,11 +1392,20 @@
         unreadMark = { key, count: Number(c.unread) || 0, id: null, seen: false };
         if (unreadMark.count) needRead(key);
         c.unread = 0;
-        conv.querySelector('.twc-jump').addEventListener('click', () => {
+        conv.querySelector('.twc-jumpgo').addEventListener('click', () => {
             const div = box_.querySelector('.twc-unread');
             if (div) div.scrollIntoView({ behavior: 'smooth', block: 'start' });
             unreadMark.seen = true;
             paintJump();
+        });
+        // ✕: like the ✕ on Torn's own pill, everything counts as read without scrolling up.
+        conv.querySelector('.twc-jumpx').addEventListener('click', () => {
+            unreadMark.seen = true;
+            unreadMark.count = 0;
+            unreadMark.id = null;
+            needRead(key);
+            markRead(c, true);
+            renderMessages();
         });
         paintHeader();
         renderMessages(false, true);
