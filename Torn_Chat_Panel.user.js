@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Chat Panel
 // @namespace    https://github.com/nebigoktug
-// @version      1.1.5
+// @version      1.1.6
 // @description  A full-screen messenger-style view of Torn's Chat 3.1: one list of all your chats with last message, time, unread count and online dot, and a bubble view per chat. Torn's own chat does the work underneath: messages are read from what Torn already loads, and sending types into Torn's own message box.
 // @author       Nebigoktug
 // @license      MIT
@@ -51,7 +51,7 @@
     if (window.__twcRunning) return;
     window.__twcRunning = true;
 
-    const VERSION  = '1.1.5';
+    const VERSION  = '1.1.6';
     const REPO_URL = 'https://github.com/nebigoktug/torn-userscripts';
     const LS_CONVS = 'twc_convs';      // chat list (names, last message) for a quick start
     const LS_ME    = 'twc_me';
@@ -1371,10 +1371,12 @@
         const box_ = conv.querySelector('.twc-msgs');
         box_.addEventListener('scroll', () => { if (box_.scrollTop < 60) loadOlder(); paintDown(); }, { passive: true });
         // Images load after the text: stay at the bottom if the reader was there.
-        let atBottom = true;
-        box_.addEventListener('scroll', () => { atBottom = box_.scrollHeight - box_.scrollTop - box_.clientHeight < 80; }, { passive: true });
+        // "Following" = the reader is at the very bottom. Any scroll away from it,
+        // even a little, stops new messages and images from pulling the view down.
+        following = true;
+        box_.addEventListener('scroll', () => { following = box_.scrollHeight - box_.scrollTop - box_.clientHeight < FOLLOW_PX; }, { passive: true });
         box_.addEventListener('load', (e) => {
-            if (e.target.classList && e.target.classList.contains('twc-img') && atBottom) box_.scrollTop = box_.scrollHeight;
+            if (e.target.classList && e.target.classList.contains('twc-img') && following) box_.scrollTop = box_.scrollHeight;
         }, true);
         box_.addEventListener('error', (e) => {
             const img = e.target;
@@ -1444,7 +1446,7 @@
         const c = convs.get(currentKey);
         if (!el || !c) return;
         const b = box(c.key);
-        const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 120;
+        const nearBottom = following;
         const oldHeight = el.scrollHeight, oldTop = el.scrollTop;
         // The message at the top of the view, to put it back exactly where it was
         // after the redraw (images briefly have no height while re-created).
@@ -1500,7 +1502,7 @@
         });
         el.innerHTML = html;
         if (keepTop) el.scrollTop = el.scrollHeight - oldHeight + oldTop;
-        else if (stick === true || nearBottom) { el.scrollTop = el.scrollHeight; newBelow = 0; }
+        else if (stick === true || nearBottom) { el.scrollTop = el.scrollHeight; newBelow = 0; following = true; }
         else {
             const same = anchor && el.querySelector(`.twc-b[data-id="${anchor.id.replace(/"/g, '')}"]`);
             if (same) el.scrollTop += same.getBoundingClientRect().top - el.getBoundingClientRect().top - anchor.off;
@@ -1511,6 +1513,8 @@
         paintDown();
     }
     let newBelow = 0, shownCount = 0, unreadMark = null;
+    let following = true;
+    const FOLLOW_PX = 24;
     // "↑ N" until the unread divider has been on screen once (or tapped).
     function paintJump() {
         const el = root && root.querySelector('.twc-msgs');
@@ -1533,7 +1537,7 @@
         const el = root && root.querySelector('.twc-msgs');
         const btn = root && root.querySelector('.twc-down');
         if (!el || !btn) return;
-        const away = el.scrollHeight - el.scrollTop - el.clientHeight > 200;
+        const away = !following && el.scrollHeight - el.scrollTop - el.clientHeight > 80;
         if (!away) newBelow = 0;
         btn.hidden = !away;
         btn.querySelector('b').textContent = newBelow ? String(newBelow) : '';
