@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Chat Panel
 // @namespace    https://github.com/nebigoktug
-// @version      0.6.3
+// @version      0.7.0
 // @description  A full-screen messenger-style view of Torn's Chat 3.1: one list of all your chats with last message, time, unread count and online dot, and a bubble view per chat. Torn's own chat does the work underneath: messages are read from what Torn already loads, and sending types into Torn's own message box.
 // @author       Nebigoktug
 // @license      MIT
@@ -47,7 +47,7 @@
     if (window.__twcRunning) return;
     window.__twcRunning = true;
 
-    const VERSION  = '0.6.3';
+    const VERSION  = '0.7.0';
     const REPO_URL = 'https://github.com/nebigoktug/torn-userscripts';
     const LS_CONVS = 'twc_convs';      // chat list (names, last message) for a quick start
     const LS_ME    = 'twc_me';
@@ -603,9 +603,11 @@
         st.id = 'twc-styles';
         st.textContent = `
         #twc-root { --bg: #0b141a; --panel: #111b21; --head: #202c33; --fg: #e9edef; --muted: #8696a0; --line: #222d34;
-            --mine: #005c4b; --theirs: #202c33; --accent: #00a884; --badge: #00a884; --input: #2a3942; --link: #53bdeb; --dots: rgba(255,255,255,.035); }
+            --mine: #005c4b; --theirs: #202c33; --accent: #00a884; --badge: #00a884; --input: #2a3942; --link: #53bdeb; --dots: rgba(255,255,255,.035);
+            --headbar: rgba(18,24,28,.95); --press: rgba(255,255,255,.04); }
         body:not(.dark-mode) #twc-root { --bg: #efeae2; --panel: #fff; --head: #f0f2f5; --fg: #111b21; --muted: #667781; --line: #e9edef;
-            --mine: #d9fdd3; --theirs: #fff; --accent: #008069; --badge: #25d366; --input: #fff; --link: #027eb5; --dots: rgba(0,0,0,.05); }
+            --mine: #d9fdd3; --theirs: #fff; --accent: #008069; --badge: #25d366; --input: #fff; --link: #027eb5; --dots: rgba(0,0,0,.05);
+            --headbar: rgba(240,242,245,.95); --press: rgba(0,0,0,.04); }
         #twc-root { position: fixed; inset: 0; z-index: 2147483647; isolation: isolate; display: flex; background: var(--bg); color: var(--fg);
             font: 15px/1.35 -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
         #twc-root * { box-sizing: border-box; }
@@ -619,25 +621,27 @@
             #twc-root .twc-conv { display: flex; }
             #twc-root .twc-back { display: none !important; }
         }
-        #twc-root .twc-head { display: flex; align-items: center; gap: 10px; min-height: 56px; padding: 8px 12px; background: var(--head); flex: none; }
+        #twc-root .twc-head { display: flex; align-items: center; gap: 10px; min-height: 56px; padding: 8px 12px; flex: none;
+            background: var(--headbar); -webkit-backdrop-filter: blur(10px); backdrop-filter: blur(10px);
+            border-bottom: 1px solid rgba(255,255,255,.04); position: relative; z-index: 3; }
         #twc-root .twc-head h1 { flex: 1; margin: 0; font-size: 19px; font-weight: 600; }
         #twc-root .twc-ib { background: none; border: 0; padding: 6px; cursor: pointer; font-size: 20px; line-height: 1; color: var(--muted); }
         #twc-root .twc-ib:hover { color: var(--fg); }
         #twc-root .twc-search { padding: 6px 12px 8px; background: var(--panel); flex: none; }
         #twc-root .twc-search input { width: 100%; padding: 8px 12px; border-radius: 8px; border: 0; background: var(--head); color: var(--fg); font-size: 14px; outline: none; }
         #twc-root .twc-items { flex: 1; overflow-y: auto; }
-        #twc-root .twc-item { display: flex; align-items: center; gap: 12px; padding: 10px 12px; cursor: pointer; }
-        #twc-root .twc-item:hover, #twc-root .twc-item.sel { background: var(--head); }
+        #twc-root .twc-item { display: flex; align-items: center; gap: 12px; padding: 10px 12px; cursor: pointer;
+            transition: background-color .12s; -webkit-tap-highlight-color: transparent; }
+        #twc-root .twc-item:hover, #twc-root .twc-item:active { background: var(--press); }
+        #twc-root .twc-item.sel { background: var(--head); }
         #twc-root .twc-item .twc-mid { flex: 1; min-width: 0; display: flex; align-items: center; gap: 8px;
             border-bottom: 1px solid var(--line); padding-bottom: 10px; margin-bottom: -10px; }
         #twc-root .twc-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
         /* Right column: time on top, status icons + unread badge under it. */
-        #twc-root .twc-side { flex: none; display: flex; flex-direction: column; align-items: flex-end; gap: 4px; }
-        #twc-root .twc-flags { display: flex; align-items: center; min-height: 20px; }
-        #twc-root .twc-flags .twc-ico { margin-right: 5px; }
-        #twc-root .twc-flags .twc-ico:last-child { margin-right: 0; }
+        #twc-root .twc-side { flex: none; min-width: 60px; display: flex; flex-direction: column; align-items: flex-end; gap: 4px; }
+        #twc-root .twc-flags { display: flex; gap: 4px; align-items: center; justify-content: flex-end; min-height: 20px; }
         #twc-root .twc-name { min-width: 0; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-        #twc-root .twc-time { font-size: 12px; color: var(--muted); }
+        #twc-root .twc-time { font-size: 0.75rem; line-height: 16px; color: var(--muted); white-space: nowrap; }
         #twc-root .twc-item.unread .twc-time { color: var(--badge); }
         #twc-root .twc-prev { min-width: 0; font-size: 13.5px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
         #twc-root .twc-badge { min-width: 20px; height: 20px; padding: 0 6px; border-radius: 10px; background: var(--badge); color: #fff !important;
@@ -654,7 +658,9 @@
         #twc-root .twc-ctitle b { display: block; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
         #twc-root .twc-ctitle small { display: flex; align-items: center; gap: 4px; font-size: 12.5px; color: var(--muted); }
         #twc-root .twc-head > * { align-self: center; }
-        #twc-root .twc-head .twc-ib { display: flex; align-items: center; justify-content: center; }
+        #twc-root .twc-head .twc-ib { display: flex; align-items: center; justify-content: center; width: 40px; height: 40px; padding: 0;
+            border-radius: 50%; flex: none; }
+        #twc-root .twc-head .twc-ib:active { background: rgba(255,255,255,.08); }
         #twc-root .twc-ctitle a { color: inherit; text-decoration: none; }
         #twc-root .twc-msgwrap { position: relative; flex: 1; min-height: 0; display: flex; }
         #twc-root .twc-msgs { flex: 1; overflow-y: auto; padding: 8px 4% 10px; display: flex; flex-direction: column; gap: 2px;
@@ -669,31 +675,40 @@
         #twc-root .twc-down b { position: absolute; top: -6px; right: -4px; min-width: 20px; height: 20px; padding: 0 5px; border-radius: 10px;
             background: var(--badge); color: #fff !important; font-size: 11px; line-height: 20px; }
         #twc-root .twc-older { align-self: center; margin: 6px 0; font-size: 12.5px; color: var(--muted); }
-        #twc-root .twc-b { position: relative; max-width: min(78%, 560px); padding: 8px 14px; border-radius: 8px; background: var(--theirs);
-            align-self: flex-start; box-shadow: 0 1px .5px rgba(0,0,0,.13); overflow-wrap: anywhere; margin-top: 1px; }
-        #twc-root .twc-b.first { margin-top: 8px; border-top-left-radius: 0; }
+        /* Grouped bubbles: 2px apart inside a group, 10px between groups. The side
+           facing the sender is 6px-cornered where bubbles join; only the first has
+           a tail, only the last gets a fully round bottom corner. */
+        #twc-root .twc-b { position: relative; max-width: min(78%, 560px); padding: 8px 14px; background: var(--theirs);
+            align-self: flex-start; box-shadow: 0 1px .5px rgba(0,0,0,.13); overflow-wrap: anywhere; margin-top: 2px;
+            border-radius: 6px 12px 12px 6px; }
+        #twc-root .twc-b.first { margin-top: 10px; border-top-left-radius: 0; }
+        #twc-root .twc-b.last { border-bottom-left-radius: 12px; }
         /* Tail on the first bubble of a group, like WhatsApp. */
         #twc-root .twc-b.first::before { content: ''; position: absolute; top: 0; left: -8px; width: 0; height: 0; border-style: solid;
             border-width: 0 8px 10px 0; border-color: transparent var(--theirs) transparent transparent; }
-        #twc-root .twc-b.mine { align-self: flex-end; background: var(--mine); }
-        #twc-root .twc-b.mine.first { border-top-left-radius: 8px; border-top-right-radius: 0; }
+        #twc-root .twc-b.mine { align-self: flex-end; background: var(--mine); border-radius: 12px 6px 6px 12px; }
+        #twc-root .twc-b.mine.first { border-top-right-radius: 0; }
+        #twc-root .twc-b.mine.last { border-bottom-right-radius: 12px; }
         #twc-root .twc-b.mine.first::before { left: auto; right: -8px; border-width: 0 0 10px 8px; border-color: transparent transparent transparent var(--mine); }
         #twc-root .twc-b.indent { margin-left: 36px; }
         #twc-root .twc-sav { position: absolute; left: -44px; top: 0; width: 30px; height: 30px; border-radius: 50%; overflow: hidden; background: var(--head);
             display: flex; align-items: center; justify-content: center; font-size: 13px; font-weight: 600; color: var(--muted) !important; text-decoration: none; }
         #twc-root .twc-sav img { width: 100%; height: 100%; object-fit: cover; }
         #twc-root .twc-b .twc-from { display: block; font-size: 13px; font-weight: 600; margin-bottom: 1px; text-decoration: none; }
-        #twc-root .twc-b.jumbo { background: transparent !important; box-shadow: none; padding: 0 2px; }
-        #twc-root .twc-b.jumbo::before { display: none; }
-        #twc-root .twc-b.jumbo .twc-txt { font-size: 42px; line-height: 1.15; }
-        #twc-root .twc-b.jumbo .twc-meta { float: none; display: block; text-align: right; margin: 0; padding: 1px 6px; border-radius: 8px; background: var(--head); width: fit-content; margin-left: auto; }
+        /* Emoji-only messages stay in their bubble, just larger. */
+        #twc-root .twc-b.jumbo { padding: 6px 12px 8px; }
+        #twc-root .twc-b.jumbo .twc-txt { font-size: 32px; line-height: 1.2; }
+        #twc-root .twc-b.jumbo .twc-meta { top: 14px; }
         #twc-root .twc-b.mention { box-shadow: inset 3px 0 0 var(--accent), 0 1px .5px rgba(0,0,0,.13); }
         #twc-root .twc-at { color: var(--link) !important; font-weight: 600; }
         #twc-root .twc-tick { font-style: normal; margin-left: 3px; color: var(--link) !important; }
         #twc-root .twc-tick.bad { color: #e5534b !important; font-weight: 700; }
         #twc-root .twc-b .twc-txt { font-size: 14.5px; }
         #twc-root .twc-b .twc-txt a { color: var(--link) !important; }
-        #twc-root .twc-b .twc-meta { float: right; margin: 6px 0 -3px 12px; font-size: 11px; color: var(--muted); white-space: nowrap; }
+        /* Time floats to the bottom-right with at least 16px between it and the text. */
+        #twc-root .twc-b .twc-meta { float: right; position: relative; top: 5px; margin: 0 -4px 0 16px; font-size: 11px; line-height: 15px;
+            color: var(--muted); white-space: nowrap; }
+        #twc-root .twc-b .twc-txt { line-height: 1.4; }
 
         #twc-root .twc-b.failed { outline: 1px solid #e5534b; }
         #twc-root .twc-compose { display: flex; align-items: flex-end; gap: 8px; padding: 8px 10px; background: var(--head); flex: none; }
@@ -1037,10 +1052,14 @@
         const st = document.createElement('style');
         st.id = 'twc-badge-styles';
         st.textContent = `
-            #twc-btn { position: relative; display: flex; align-items: center; justify-content: center; }
+            /* Round, lifted button wherever it sits (chat bar or floating). */
+            #twc-btn { position: relative; display: flex; align-items: center; justify-content: center; border-radius: 50% !important;
+                width: 40px !important; height: 40px !important; min-width: 40px; padding: 0 !important; margin: auto 4px; align-self: center;
+                border: 0 !important; box-shadow: 0 4px 12px rgba(0,0,0,.4), inset 0 1px 0 rgba(255,255,255,.25) !important; overflow: visible; }
+            #twc-btn:active { transform: scale(.94); }
             #twc-btn svg { width: 22px; height: 22px; }
-            #twc-btn.twc-float { position: fixed; right: 12px; bottom: 160px; z-index: 2147483639; width: 44px; height: 44px; border-radius: 50%;
-                border: 1px solid rgba(255,255,255,.25); padding: 0; cursor: pointer; box-shadow: 0 3px 12px rgba(0,0,0,.35); }
+            #twc-btn.twc-float { position: fixed; right: 14px; bottom: 160px; z-index: 2147483639; width: 52px !important; height: 52px !important;
+                cursor: pointer; margin: 0; }
             #twc-btn[data-twc-unread]::after {
                 content: attr(data-twc-unread); position: absolute; top: -4px; right: -4px; min-width: 18px; height: 18px; padding: 0 5px;
                 border-radius: 9px; background: #e5534b; color: #fff; font: 700 11px/18px Arial, sans-serif; text-align: center;
@@ -1192,25 +1211,32 @@
         let html = `<div class="twc-older">${olderPending ? 'Loading older messages…' : ''}</div>`;
         if (!b.list.length) html += `<div class="twc-empty">${b.loaded ? 'No messages yet.' : 'Loading messages…'}</div>`;
         else if (!b.loaded) html += '<div class="twc-older">Loading earlier messages…</div>';
-        let lastDay = '', lastSender = null, lastAt = 0;
+        // Groups: same sender, same day, no gap over 5 minutes. Each message knows
+        // whether it opens and/or closes its group, which drives spacing and corners.
+        const starts = b.list.map((m, i) => {
+            if (!i) return true;
+            const p = b.list[i - 1];
+            const at = m.createdAt || Date.now(), pat = p.createdAt || Date.now();
+            return dayKey(at) !== dayKey(pat) || (m.sender && m.sender.userId) !== (p.sender && p.sender.userId) || at - pat > 5 * 60000;
+        });
+        let lastDay = '', idx = -1;
         const room = c.type === 'room';
         b.list.forEach((m) => {
+            idx++;
             const at = m.createdAt || Date.now();
             const d = dayKey(at);
-            if (d !== lastDay) { html += `<div class="twc-day"><span>${dayLabel(at)}</span></div>`; lastDay = d; lastSender = null; }
+            if (d !== lastDay) { html += `<div class="twc-day"><span>${dayLabel(at)}</span></div>`; lastDay = d; }
             const mine = isMine(c.key, m);
             const uid = m.sender && m.sender.userId;
-            // A new group starts with another sender or after a 5-minute gap.
-            const first = uid !== lastSender || at - lastAt > 5 * 60000;
-            lastSender = uid;
-            lastAt = at;
+            const first = starts[idx];
+            const last = idx === b.list.length - 1 || starts[idx + 1];
             const jumbo = isJumbo(m.content);
             const from = room && !mine && first && m.sender
                 ? `<span class="twc-fromrow"><a class="twc-from" href="/profiles.php?XID=${encodeURIComponent(uid)}" style="color:${nameColor(uid)} !important">${esc(m.sender.name)}</a>${ffbsChip(uid)}</span>` : '';
             const av = room && !mine && first && m.sender
                 ? `<a class="twc-sav" href="/profiles.php?XID=${encodeURIComponent(uid)}">${m.sender.avatar ? `<img src="${esc(m.sender.avatar)}" alt="" loading="lazy">` : esc(String(m.sender.name || '?').slice(0, 1))}</a>` : '';
             const tick = mine ? (m.pending ? '<i class="twc-tick">🕓</i>' : m.failed ? '<i class="twc-tick bad">!</i>' : '<i class="twc-tick">✓</i>') : '';
-            const cls = ['twc-b', mine ? 'mine' : '', first ? 'first' : '', room && !mine ? 'indent' : '', jumbo ? 'jumbo' : '',
+            const cls = ['twc-b', mine ? 'mine' : '', first ? 'first' : '', last ? 'last' : '', room && !mine ? 'indent' : '', jumbo ? 'jumbo' : '',
                 m.pending ? 'pending' : '', m.failed ? 'failed' : '', !mine && mentionsMe(m.content) ? 'mention' : ''].filter(Boolean).join(' ');
             html += `<div class="${cls}" data-id="${esc(m.messageId)}">${av}${from}<span class="twc-txt">${linkify(m.content)}</span>` +
                 `<span class="twc-meta">${m.createdAt ? tct(m.createdAt) : ''}${tick}</span></div>`;
