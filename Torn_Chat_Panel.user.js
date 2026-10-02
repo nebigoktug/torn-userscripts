@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Chat Panel
 // @namespace    https://github.com/nebigoktug
-// @version      0.8.2
+// @version      1.0.0
 // @description  A full-screen messenger-style view of Torn's Chat 3.1: one list of all your chats with last message, time, unread count and online dot, and a bubble view per chat. Torn's own chat does the work underneath: messages are read from what Torn already loads, and sending types into Torn's own message box.
 // @author       Nebigoktug
 // @license      MIT
@@ -47,14 +47,14 @@
     if (window.__twcRunning) return;
     window.__twcRunning = true;
 
-    const VERSION  = '0.8.2';
+    const VERSION  = '1.0.0';
     const REPO_URL = 'https://github.com/nebigoktug/torn-userscripts';
     const LS_CONVS = 'twc_convs';      // chat list (names, last message) for a quick start
     const LS_ME    = 'twc_me';
     const LS_EMOJI_SEEN = 'twc_emoji_seen';     // emoji -> how often it appeared in your chats
     const LS_EMOJI_UPTO = 'twc_emoji_upto';     // chat -> newest message already counted
     const LS_EMOJI_RECENT = 'twc_emoji_recent';
-    const DEFAULT_MAX_LEN = 840;
+    const DEFAULT_MAX_LEN = 840;                // Torn wiki: chat messages are capped at 840 characters
     const LS_PREFS = 'twc_prefs';
     const AUTHOR = { name: 'Nebigoktug', id: 3980062 };
     const touch = 'ontouchstart' in window;
@@ -85,14 +85,46 @@
         };
     })();
 
+    // Failsafe. The panel depends on how Torn's chat is built. If that changes
+    // (no chat bar, no data, windows that won't open), Torn's own chat is shown
+    // again and the panel says why, so nobody is left without a chat. The state
+    // is remembered for a few hours, so pages don't hide and unhide it each
+    // time, and cleared as soon as the panel sees the chat working again.
+    const LS_DEGRADED = 'twc_degraded';
+    const DEGRADED_TTL_MS = 6 * 3600 * 1000;
+    const health = { json: false, ws: false, openFails: 0,
+        degraded: (() => { try { const d = JSON.parse(localStorage.getItem(LS_DEGRADED) || 'null');
+            return d && d.v === VERSION && Date.now() - d.at < DEGRADED_TTL_MS ? d.reason : null; } catch (e) { return null; } })() };
+    const DEGRADED_TEXT = {
+        bar: "Torn's chat bar looks different from what this version knows.",
+        data: "No chat data came from Torn's chat on this page.",
+        windows: "Torn's chat windows could not be opened.",
+    };
+    const hidingTorn = () => !!prefs.hideTorn && !health.degraded;
+    function degrade(reason) {
+        if (health.degraded) return;
+        health.degraded = reason;
+        lsSet(LS_DEGRADED, JSON.stringify({ reason, at: Date.now(), v: VERSION }));
+        console.warn('[Torn Chat Panel] showing Torn\'s own chat again:', DEGRADED_TEXT[reason] || reason);
+        applyHideTorn();
+        paintWarn();
+    }
+    function recovered() {
+        if (!health.degraded) return;
+        health.degraded = null;
+        try { localStorage.removeItem(LS_DEGRADED); } catch (e) {}
+        applyHideTorn();
+        paintWarn();
+    }
+
     // Hide Torn's chat from the very start of every page load (document-start),
     // before Torn draws it, so its windows don't flash up on page changes.
-    if (prefs.hideTorn) {
+    if (hidingTorn()) {
         document.documentElement.classList.add('twc-hide-torn');
         injectBadgeStyles();
     }
     const isPinned = (key) => prefs.pinned.includes(key);
-    const isMuted = (key) => prefs.muted.includes(key);                // Torn wiki: chat messages are capped at 840 characters
+    const isMuted = (key) => prefs.muted.includes(key);
     const ROOM_ICONS = { faction: '🛡️', company: '🏢', global: '🌐', trade: '🔁' };
     const ROOM_COLORS = { faction: '#1f7a4d', company: '#5b6b7a', global: '#1f6fb2', trade: '#c46a1b' };
 
@@ -201,6 +233,7 @@
     // ------------------------------------------------------------ reading Torn's chat data
     function onJson(path, data) {
         let m;
+        health.json = true;
         if (path === '/tchat/rooms' && data && Array.isArray(data.items)) {
             data.items.forEach((r) => { if (!r.isLeft) conv(roomKey(r.id), { type: 'room', id: r.id, name: decode(r.name), rules: r.rules || null }); });
         } else if ((m = path.match(/^\/tchat\/rooms\/([^/]+)\/join$/)) && data && data.id) {
@@ -261,6 +294,7 @@
 
     // Live events from the chat WebSocket (Centrifugo, JSON, one reply per line).
     function onSocketText(text) {
+        health.ws = true;
         String(text).split('\n').forEach((line) => {
             if (line.indexOf('tchat') < 0) return;
             let f;
@@ -407,6 +441,8 @@
             if (card) (card.querySelector('button, [role="button"]') || card).click();
         }
         const win = await waitFor(() => tornWindow(c), 4000);
+        if (win) health.openFails = 0;
+        else if (++health.openFails >= 2) degrade('windows');
         if (win) { openedWins.add(String(c.id)); applyHideTorn(); }
         return win;
     }
@@ -778,6 +814,9 @@
         #twc-root .twc-enote { grid-column: 1 / -1; padding: 14px; text-align: center; font-size: 13px; color: var(--muted); }
         #twc-root .twc-err { padding: 6px 12px; font-size: 12.5px; color: #e5534b; background: var(--head); }
         #twc-root .twc-pick { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; color: var(--muted); text-align: center; padding: 20px; }
+        #twc-root .twc-warn { padding: 9px 14px; font-size: 12.5px; line-height: 1.45; background: rgba(240,178,50,.14); color: var(--fg) !important;
+            border-bottom: 1px solid rgba(240,178,50,.35); flex: none; }
+        #twc-root .twc-warn a { color: var(--link) !important; }
         #twc-root .twc-about { margin: 10px 18px 0; font-size: 11.5px; color: var(--muted) !important; }
         #twc-root .twc-about a { color: var(--muted) !important; }
         #twc-root.sz-s { font-size: 13.5px; } #twc-root.sz-s .twc-b .twc-txt { font-size: 13px; }
@@ -832,12 +871,14 @@
         root.classList.toggle('nowall', !prefs.wallpaper);
         root.innerHTML = `
             <section class="twc-list">
+                <div class="twc-warn" hidden></div>
                 <div class="twc-head"><h1>Chats</h1><button class="twc-ib" data-a="settings" title="Settings">⚙</button><button class="twc-ib" data-a="close" title="Close">✕</button></div>
                 <div class="twc-search"><label class="twc-sbox"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5" fill="none" stroke="currentColor" stroke-width="2"/><path d="M15.5 15.5L20 20" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg><input type="search" placeholder="Search" autocomplete="off"></label></div>
                 <div class="twc-items"></div>
             </section>
             <section class="twc-conv"><div class="twc-pick"><div style="font-size:40px">💬</div>Pick a chat</div></section>`;
         document.body.appendChild(root);
+        paintWarn();
         root.querySelector('[data-a="close"]').addEventListener('click', requestClose);
         root.querySelector('[data-a="settings"]').addEventListener('click', openSettings);
         // Long-press (or right-click) a chat: pin / mute.
@@ -904,14 +945,16 @@
     // the people list, chat settings) is made invisible and untouchable, not
     // removed: the panel still needs those windows to load and send.
     function applyHideTorn() {
-        document.documentElement.classList.toggle('twc-hide-torn', !!prefs.hideTorn);
+        const hide = hidingTorn();
+        document.documentElement.classList.toggle('twc-hide-torn', hide);
         const chat = chatRoot();
+        if (!hide && chat) chat.querySelectorAll('[data-twc-hidden]').forEach((el) => el.removeAttribute('data-twc-hidden'));
         const anchor = document.getElementById('people_panel_button') || document.getElementById('twc-btn');
         if (!chat || !anchor || !chat.contains(anchor)) return;
         for (let el = anchor.parentNode; el && el !== chat; el = el.parentNode) {
             Array.from(el.parentNode.children).forEach((sib) => {
                 if (sib === el) return;
-                if (prefs.hideTorn) { if (!sib.hasAttribute('data-twc-hidden')) sib.setAttribute('data-twc-hidden', ''); }
+                if (hide) { if (!sib.hasAttribute('data-twc-hidden')) sib.setAttribute('data-twc-hidden', ''); }
                 else sib.removeAttribute('data-twc-hidden');
             });
         }
@@ -933,6 +976,14 @@
             const btn = document.getElementById('people_panel_button');
             if (people && btn) btn.click();
         }
+    }
+
+    function paintWarn() {
+        const el = root && root.querySelector('.twc-warn');
+        if (!el) return;
+        el.hidden = !health.degraded;
+        if (health.degraded) el.innerHTML = `⚠️ ${esc(DEGRADED_TEXT[health.degraded] || 'Torn\'s chat changed.')} Torn's own chat is shown again,
+            and this panel may miss messages. <a href="${REPO_URL}/issues" target="_blank" rel="noopener">Report it</a> or check for an update.`;
     }
 
     // ------------------------------------------------------------ sheets (menus)
@@ -1438,6 +1489,16 @@
         // Torn's chat renders after the page; hide its windows as they appear.
         waitFor(() => chatRoot(), 15000).then((chat) => {
             if (!chat) return;
+            const barFound = () => !!(document.getElementById('people_panel_button') || document.getElementById('notes_settings_button') ||
+                chat.querySelector('[id^="chat_panel_button:"]'));
+            setTimeout(() => {
+                if (!barFound()) { degrade('bar'); return; }
+                if (health.json || health.ws) { recovered(); return; }
+                setTimeout(() => {
+                    if (health.json || health.ws) recovered();
+                    else if (!document.hidden) degrade('data');
+                }, 15000);
+            }, 8000);
             let p2 = false;
             new MutationObserver(() => {
                 if (p2) return;
