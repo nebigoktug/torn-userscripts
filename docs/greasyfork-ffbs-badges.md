@@ -33,6 +33,10 @@ The script only displays information. It never clicks or acts in the game for yo
 
 See also [FFScouter's privacy policy](https://ffscouter.com/privacy).
 
+## Works with Torn Chat Panel
+
+[Torn Chat Panel](https://greasyfork.org/en/scripts/598409-torn-chat-panel), a messenger-style view of Torn's chat, shows the same FF / BS estimates next to names in chat. It reads them from this script's cache, so it makes no extra lookups.
+
 ## Source & support
 
 Source code, issues and changelog: [github.com/nebigoktug/torn-userscripts](https://github.com/nebigoktug/torn-userscripts)
