@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Chat Panel
 // @namespace    https://github.com/nebigoktug
-// @version      1.1.4
+// @version      1.1.5
 // @description  A full-screen messenger-style view of Torn's Chat 3.1: one list of all your chats with last message, time, unread count and online dot, and a bubble view per chat. Torn's own chat does the work underneath: messages are read from what Torn already loads, and sending types into Torn's own message box.
 // @author       Nebigoktug
 // @license      MIT
@@ -51,7 +51,7 @@
     if (window.__twcRunning) return;
     window.__twcRunning = true;
 
-    const VERSION  = '1.1.4';
+    const VERSION  = '1.1.5';
     const REPO_URL = 'https://github.com/nebigoktug/torn-userscripts';
     const LS_CONVS = 'twc_convs';      // chat list (names, last message) for a quick start
     const LS_ME    = 'twc_me';
@@ -256,7 +256,9 @@
                 // Only an "older" page keeps the reader's place; a first load jumps to the newest.
                 const older = !!olderPending && box(key).list.length > before && before > 0;
                 olderPending = 0;
-                renderMessages(older, !older);
+                // Only a chat's first load jumps to the newest; a later reload of the
+                // same messages must not pull the reader away from where they are.
+                renderMessages(older, before === 0 || undefined);
             }
         } else if (path === '/tchat/unread' && data) {
             Object.entries(data.rooms || {}).forEach(([id, n]) => { conv(roomKey(id), { type: 'room', id }).unread = Number(n) || 0; });
@@ -323,7 +325,7 @@
                 const c = convs.get(key);
                 if (key !== currentKey && !isMine(key, m)) c.unread = (c.unread || 0) + 1;
                 if (key === currentKey && !isMine(key, m)) needRead(key);
-                if (key === currentKey) renderMessages(false, true);
+                if (key === currentKey) renderMessages(false, isMine(key, m) || undefined);
                 saveConvs();
                 renderSoon();
             }
@@ -833,7 +835,7 @@
         #twc-root .twc-head .twc-back { color: var(--fg) !important; font-size: 24px; margin-right: -2px; }
         #twc-root .twc-ctitle a { color: inherit; text-decoration: none; }
         #twc-root .twc-msgwrap { position: relative; flex: 1; min-height: 0; display: flex; }
-        #twc-root .twc-msgs { flex: 1; overflow-y: auto; padding: 8px 4% 10px; display: flex; flex-direction: column; gap: 2px;
+        #twc-root .twc-msgs { flex: 1; overflow-y: auto; overflow-anchor: auto; padding: 8px 4% 10px; display: flex; flex-direction: column; gap: 2px;
             background-color: var(--bg); background-image: radial-gradient(var(--dots) 1px, transparent 1.2px), radial-gradient(var(--dots) 1px, transparent 1.2px);
             background-size: 26px 26px; background-position: 0 0, 13px 13px; overscroll-behavior: contain; }
         #twc-root .twc-day { align-self: center; margin: 12px auto; }
@@ -1444,6 +1446,14 @@
         const b = box(c.key);
         const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 120;
         const oldHeight = el.scrollHeight, oldTop = el.scrollTop;
+        // The message at the top of the view, to put it back exactly where it was
+        // after the redraw (images briefly have no height while re-created).
+        let anchor = null;
+        if (!keepTop && stick !== true && !nearBottom) {
+            const top = el.getBoundingClientRect().top;
+            const first = Array.from(el.querySelectorAll('.twc-b[data-id]')).find((x) => x.getBoundingClientRect().bottom > top);
+            if (first) anchor = { id: first.getAttribute('data-id'), off: first.getBoundingClientRect().top - top };
+        }
         let html = `<div class="twc-older">${olderPending ? 'Loading older messages…' : ''}</div>`;
         if (!b.list.length) html += `<div class="twc-empty">${b.loaded ? 'No messages yet.' : 'Loading messages…'}</div>`;
         else if (!b.loaded) html += '<div class="twc-older">Loading earlier messages…</div>';
@@ -1490,8 +1500,13 @@
         });
         el.innerHTML = html;
         if (keepTop) el.scrollTop = el.scrollHeight - oldHeight + oldTop;
-        else if (stick === true ? true : nearBottom) { el.scrollTop = el.scrollHeight; newBelow = 0; }
-        else if (!keepTop && b.list.length > shownCount) newBelow += b.list.length - shownCount;
+        else if (stick === true || nearBottom) { el.scrollTop = el.scrollHeight; newBelow = 0; }
+        else {
+            const same = anchor && el.querySelector(`.twc-b[data-id="${anchor.id.replace(/"/g, '')}"]`);
+            if (same) el.scrollTop += same.getBoundingClientRect().top - el.getBoundingClientRect().top - anchor.off;
+            else el.scrollTop = oldTop;
+            if (b.list.length > shownCount) newBelow += b.list.length - shownCount;
+        }
         shownCount = b.list.length;
         paintDown();
     }
