@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Chat Panel
 // @namespace    https://github.com/nebigoktug
-// @version      0.6.2
+// @version      0.6.3
 // @description  A full-screen messenger-style view of Torn's Chat 3.1: one list of all your chats with last message, time, unread count and online dot, and a bubble view per chat. Torn's own chat does the work underneath: messages are read from what Torn already loads, and sending types into Torn's own message box.
 // @author       Nebigoktug
 // @license      MIT
@@ -47,7 +47,7 @@
     if (window.__twcRunning) return;
     window.__twcRunning = true;
 
-    const VERSION  = '0.6.2';
+    const VERSION  = '0.6.3';
     const REPO_URL = 'https://github.com/nebigoktug/torn-userscripts';
     const LS_CONVS = 'twc_convs';      // chat list (names, last message) for a quick start
     const LS_ME    = 'twc_me';
@@ -628,12 +628,18 @@
         #twc-root .twc-items { flex: 1; overflow-y: auto; }
         #twc-root .twc-item { display: flex; align-items: center; gap: 12px; padding: 10px 12px; cursor: pointer; }
         #twc-root .twc-item:hover, #twc-root .twc-item.sel { background: var(--head); }
-        #twc-root .twc-item .twc-mid { flex: 1; min-width: 0; border-bottom: 1px solid var(--line); padding-bottom: 10px; margin-bottom: -10px; }
-        #twc-root .twc-row { display: flex; align-items: baseline; gap: 6px; }
-        #twc-root .twc-name { flex: 1; min-width: 0; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        #twc-root .twc-item .twc-mid { flex: 1; min-width: 0; display: flex; align-items: center; gap: 8px;
+            border-bottom: 1px solid var(--line); padding-bottom: 10px; margin-bottom: -10px; }
+        #twc-root .twc-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+        /* Right column: time on top, status icons + unread badge under it. */
+        #twc-root .twc-side { flex: none; display: flex; flex-direction: column; align-items: flex-end; gap: 4px; }
+        #twc-root .twc-flags { display: flex; align-items: center; min-height: 20px; }
+        #twc-root .twc-flags .twc-ico { margin-right: 5px; }
+        #twc-root .twc-flags .twc-ico:last-child { margin-right: 0; }
+        #twc-root .twc-name { min-width: 0; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
         #twc-root .twc-time { font-size: 12px; color: var(--muted); }
         #twc-root .twc-item.unread .twc-time { color: var(--badge); }
-        #twc-root .twc-prev { flex: 1; min-width: 0; font-size: 13.5px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        #twc-root .twc-prev { min-width: 0; font-size: 13.5px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
         #twc-root .twc-badge { min-width: 20px; height: 20px; padding: 0 6px; border-radius: 10px; background: var(--badge); color: #fff !important;
             font-size: 12px; font-weight: 700; display: inline-flex; align-items: center; justify-content: center; }
         #twc-root .twc-av { position: relative; flex: none; width: 46px; height: 46px; border-radius: 50%; background: var(--head);
@@ -644,23 +650,26 @@
         #twc-root .twc-dot.on { background: #25d366; }
         #twc-root .twc-dot.idle { background: #f0b232; }
         #twc-root .twc-empty { padding: 30px 20px; text-align: center; color: var(--muted); font-size: 14px; }
-        #twc-root .twc-ctitle { flex: 1; min-width: 0; }
+        #twc-root .twc-ctitle { flex: 1; min-width: 0; display: flex; flex-direction: column; justify-content: center; gap: 1px; line-height: 1.25; }
         #twc-root .twc-ctitle b { display: block; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-        #twc-root .twc-ctitle small { display: block; font-size: 12.5px; color: var(--muted); }
+        #twc-root .twc-ctitle small { display: flex; align-items: center; gap: 4px; font-size: 12.5px; color: var(--muted); }
+        #twc-root .twc-head > * { align-self: center; }
+        #twc-root .twc-head .twc-ib { display: flex; align-items: center; justify-content: center; }
         #twc-root .twc-ctitle a { color: inherit; text-decoration: none; }
         #twc-root .twc-msgwrap { position: relative; flex: 1; min-height: 0; display: flex; }
         #twc-root .twc-msgs { flex: 1; overflow-y: auto; padding: 8px 4% 10px; display: flex; flex-direction: column; gap: 2px;
             background-color: var(--bg); background-image: radial-gradient(var(--dots) 1px, transparent 1.2px), radial-gradient(var(--dots) 1px, transparent 1.2px);
             background-size: 26px 26px; background-position: 0 0, 13px 13px; overscroll-behavior: contain; }
-        #twc-root .twc-day { position: sticky; top: 2px; z-index: 2; align-self: center; margin: 10px 0 6px; }
-        #twc-root .twc-day span { display: inline-block; padding: 5px 12px; border-radius: 8px; background: var(--head); font-size: 12.5px; color: var(--muted);
+        #twc-root .twc-day { position: sticky; top: 4px; z-index: 2; align-self: center; margin: 10px 0; }
+        #twc-root .twc-day span { display: inline-block; padding: 3px 10px; border-radius: 999px; background: rgba(11,20,26,.62); font-size: 0.75rem;
+            line-height: 1.4; color: #e9edef !important; -webkit-backdrop-filter: blur(4px); backdrop-filter: blur(4px);
             box-shadow: 0 1px .5px rgba(0,0,0,.13); }
         #twc-root .twc-down { position: absolute; right: 14px; bottom: 12px; width: 42px; height: 42px; border-radius: 50%; border: 0; cursor: pointer;
             background: var(--head); color: var(--muted) !important; font-size: 22px; line-height: 30px; box-shadow: 0 2px 6px rgba(0,0,0,.3); }
         #twc-root .twc-down b { position: absolute; top: -6px; right: -4px; min-width: 20px; height: 20px; padding: 0 5px; border-radius: 10px;
             background: var(--badge); color: #fff !important; font-size: 11px; line-height: 20px; }
         #twc-root .twc-older { align-self: center; margin: 6px 0; font-size: 12.5px; color: var(--muted); }
-        #twc-root .twc-b { position: relative; max-width: min(78%, 560px); padding: 6px 8px 7px; border-radius: 8px; background: var(--theirs);
+        #twc-root .twc-b { position: relative; max-width: min(78%, 560px); padding: 8px 14px; border-radius: 8px; background: var(--theirs);
             align-self: flex-start; box-shadow: 0 1px .5px rgba(0,0,0,.13); overflow-wrap: anywhere; margin-top: 1px; }
         #twc-root .twc-b.first { margin-top: 8px; border-top-left-radius: 0; }
         /* Tail on the first bubble of a group, like WhatsApp. */
@@ -684,7 +693,7 @@
         #twc-root .twc-tick.bad { color: #e5534b !important; font-weight: 700; }
         #twc-root .twc-b .twc-txt { font-size: 14.5px; }
         #twc-root .twc-b .twc-txt a { color: var(--link) !important; }
-        #twc-root .twc-b .twc-meta { float: right; margin: 6px 0 -4px 10px; font-size: 11px; color: var(--muted); white-space: nowrap; }
+        #twc-root .twc-b .twc-meta { float: right; margin: 6px 0 -3px 12px; font-size: 11px; color: var(--muted); white-space: nowrap; }
 
         #twc-root .twc-b.failed { outline: 1px solid #e5534b; }
         #twc-root .twc-compose { display: flex; align-items: flex-end; gap: 8px; padding: 8px 10px; background: var(--head); flex: none; }
@@ -1073,10 +1082,11 @@
             return `<div class="twc-item${c.unread ? ' unread' : ''}${muted ? ' muted' : ''}${c.key === currentKey ? ' sel' : ''}" data-key="${esc(c.key)}">
                 ${avatarHtml(c)}
                 <div class="twc-mid">
-                    <div class="twc-row"><span class="twc-name">${esc(titleOf(c))}</span><span class="twc-time">${listTime(l && l.createdAt)}</span></div>
-                    <div class="twc-row"><span class="twc-prev">${l ? esc(who + String(l.content).replace(/\s+/g, ' ')) : '&nbsp;'}</span>` +
-                    `${muted ? '<i class="twc-ico" title="Muted">🔕</i>' : ''}${isPinned(c.key) ? '<i class="twc-ico" title="Pinned">📌</i>' : ''}` +
-                    `${c.unread ? `<span class="twc-badge">${c.unread > 99 ? '99+' : c.unread}</span>` : ''}</div>
+                    <div class="twc-main"><span class="twc-name">${esc(titleOf(c))}</span>
+                        <span class="twc-prev">${l ? esc(who + String(l.content).replace(/\s+/g, ' ')) : '&nbsp;'}</span></div>
+                    <div class="twc-side"><span class="twc-time">${listTime(l && l.createdAt)}</span>
+                        <span class="twc-flags">${muted ? '<i class="twc-ico" title="Muted">🔕</i>' : ''}${isPinned(c.key) ? '<i class="twc-ico" title="Pinned">📌</i>' : ''}` +
+                        `${c.unread ? `<span class="twc-badge">${c.unread > 99 ? '99+' : c.unread}</span>` : ''}</span></div>
                 </div></div>`;
         }).join('');
     }
