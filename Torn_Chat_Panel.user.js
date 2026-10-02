@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Chat Panel
 // @namespace    https://github.com/nebigoktug
-// @version      0.8.0
+// @version      0.8.1
 // @description  A full-screen messenger-style view of Torn's Chat 3.1: one list of all your chats with last message, time, unread count and online dot, and a bubble view per chat. Torn's own chat does the work underneath: messages are read from what Torn already loads, and sending types into Torn's own message box.
 // @author       Nebigoktug
 // @license      MIT
@@ -47,7 +47,7 @@
     if (window.__twcRunning) return;
     window.__twcRunning = true;
 
-    const VERSION  = '0.8.0';
+    const VERSION  = '0.8.1';
     const REPO_URL = 'https://github.com/nebigoktug/torn-userscripts';
     const LS_CONVS = 'twc_convs';      // chat list (names, last message) for a quick start
     const LS_ME    = 'twc_me';
@@ -120,6 +120,8 @@
             .map(({ stale, ...c }) => c))), 1000);
     }
 
+    const onlineMap = new Map();   // player ID -> "online" / "idle" / "offline", from Torn's own status lookups
+    const statusClass = (st) => !st ? '' : /online/i.test(st) ? ' st-on' : /idle/i.test(st) ? ' st-idle' : ' st-off';
     const roomKey = (id) => 'room:' + id;
     const dmKey = (uid) => 'dm:' + uid;
     function conv(key, init) {
@@ -222,7 +224,11 @@
             Object.entries(data.rooms || {}).forEach(([id, n]) => { conv(roomKey(id), { type: 'room', id }).unread = Number(n) || 0; });
             Object.entries(data.dm || {}).forEach(([id, n]) => { conv(dmKey(id), { type: 'dm', id }).unread = Number(n) || 0; });
         } else if (path === '/tchat/social/online' && data && typeof data === 'object') {
-            Object.entries(data).forEach(([uid, st]) => { const c = convs.get(dmKey(uid)); if (c) c.online = String(st); });
+            Object.entries(data).forEach(([uid, st]) => {
+                onlineMap.set(String(uid), String(st));
+                const c = convs.get(dmKey(uid));
+                if (c) c.online = String(st);
+            });
         } else return;
         saveConvs();
         renderSoon();
@@ -603,7 +609,7 @@
             return `<span class="twc-av twc-room" style="background:${bg} !important">${icon}</span>`;
         }
         const dot = c.online && /online/i.test(c.online) ? '<i class="twc-dot on"></i>' : c.online && /idle/i.test(c.online) ? '<i class="twc-dot idle"></i>' : '';
-        return `<span class="twc-av">${c.avatar ? `<img src="${esc(c.avatar)}" alt="" loading="lazy">` : esc((c.name || '?').slice(0, 1))}${dot}</span>`;
+        return `<span class="twc-av${statusClass(c.online || onlineMap.get(String(c.id)))}">${c.avatar ? `<img src="${esc(c.avatar)}" alt="" loading="lazy">` : esc((c.name || '?').slice(0, 1))}${dot}</span>`;
     }
     const titleOf = (c) => c.name || (c.type === 'room' ? c.id.charAt(0).toUpperCase() + c.id.slice(1) : 'Player ' + c.id);
 
@@ -617,10 +623,10 @@
         st.textContent = `
         #twc-root { --bg: #0b141a; --panel: #111b21; --head: #202c33; --fg: #e9edef; --muted: #8696a0; --line: #222d34;
             --mine: #005c4b; --theirs: #202c33; --accent: #00a884; --badge: #00a884; --input: #2a3942; --link: #53bdeb; --dots: rgba(255,255,255,.035);
-            --headbar: rgba(18,24,28,.95); --press: rgba(255,255,255,.04); }
+            --headbar: rgba(18,24,28,.95); --press: rgba(255,255,255,.04); --ring: rgba(255,255,255,.14); --ring-off: rgba(255,255,255,.1); }
         body:not(.dark-mode) #twc-root { --bg: #efeae2; --panel: #fff; --head: #f0f2f5; --fg: #111b21; --muted: #667781; --line: #e9edef;
             --mine: #d9fdd3; --theirs: #fff; --accent: #008069; --badge: #25d366; --input: #fff; --link: #027eb5; --dots: rgba(0,0,0,.05);
-            --headbar: rgba(240,242,245,.95); --press: rgba(0,0,0,.04); }
+            --headbar: rgba(240,242,245,.95); --press: rgba(0,0,0,.04); --ring: rgba(0,0,0,.12); --ring-off: rgba(0,0,0,.08); }
         #twc-root { position: fixed; inset: 0; z-index: 2147483647; isolation: isolate; display: flex; background: var(--bg); color: var(--fg);
             font: 15px/1.35 -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
         #twc-root * { box-sizing: border-box; }
@@ -662,6 +668,15 @@
         #twc-root .twc-av { position: relative; flex: none; width: 46px; height: 46px; border-radius: 50%; background: var(--head);
             display: flex; align-items: center; justify-content: center; font-size: 20px; font-weight: 600; color: var(--muted); }
         #twc-root .twc-av img { width: 100%; height: 100%; border-radius: 50%; object-fit: cover; }
+        /* A thin ring keeps avatars apart from the background; green / grey when the
+           player's status is known (Torn's chat looks it up for the people you see). */
+        #twc-root .twc-av img, #twc-root .twc-sav img, #twc-root .twc-av.twc-room {
+            box-sizing: border-box; border: 1.5px solid var(--ring); }
+        #twc-root .twc-av:not(.twc-room):not(:has(img)), #twc-root .twc-sav:not(:has(img)) { box-sizing: border-box; border: 1.5px solid var(--ring); }
+        #twc-root .st-on img, #twc-root .twc-av.st-on:not(:has(img)), #twc-root .twc-sav.st-on:not(:has(img)) { border-color: #22c55e; }
+        #twc-root .st-idle img, #twc-root .twc-av.st-idle:not(:has(img)), #twc-root .twc-sav.st-idle:not(:has(img)) { border-color: rgba(240,178,50,.75); }
+        #twc-root .st-off img, #twc-root .twc-av.st-off:not(:has(img)), #twc-root .twc-sav.st-off:not(:has(img)) { border-color: var(--ring-off); }
+        #twc-root .twc-item .twc-av { margin: 2px 2px 2px 0; }
         #twc-root .twc-head .twc-av { width: 40px; height: 40px; font-size: 20px; margin-right: 2px; }
         #twc-root .twc-dot { position: absolute; right: 0; bottom: 0; width: 12px; height: 12px; border-radius: 50%; border: 2px solid var(--panel); }
         #twc-root .twc-dot.on { background: #25d366; }
@@ -714,8 +729,8 @@
         #twc-root .twc-b.mine.first { border-top-right-radius: 0; }
         #twc-root .twc-b.mine.last { border-bottom-right-radius: 12px; }
         #twc-root .twc-b.mine.first::before { left: auto; right: -8px; border-width: 0 0 10px 8px; border-color: transparent transparent transparent var(--mine); }
-        #twc-root .twc-b.indent { margin-left: 36px; }
-        #twc-root .twc-sav { position: absolute; left: -42px; top: 0; width: 32px; height: 32px; border-radius: 50%; overflow: hidden; background: var(--head);
+        #twc-root .twc-b.indent { margin-left: 42px; }
+        #twc-root .twc-sav { position: absolute; left: -46px; top: 0; width: 32px; height: 32px; border-radius: 50%; overflow: hidden; background: var(--head);
             display: flex; align-items: center; justify-content: center; font-size: 13px; font-weight: 600; color: var(--muted) !important; text-decoration: none; }
         #twc-root .twc-sav img { width: 100%; height: 100%; object-fit: cover; }
         #twc-root .twc-b .twc-from { display: block; font-size: 13px; font-weight: 600; margin-bottom: 1px; text-decoration: none; }
@@ -1278,7 +1293,7 @@
             const from = room && !mine && first && m.sender
                 ? `<span class="twc-fromrow"><a class="twc-from" href="/profiles.php?XID=${encodeURIComponent(uid)}" style="color:${nameColor(uid)} !important">${esc(m.sender.name)}</a>${ffbsChip(uid)}</span>` : '';
             const av = room && !mine && first && m.sender
-                ? `<a class="twc-sav" href="/profiles.php?XID=${encodeURIComponent(uid)}">${m.sender.avatar ? `<img src="${esc(m.sender.avatar)}" alt="" loading="lazy">` : esc(String(m.sender.name || '?').slice(0, 1))}</a>` : '';
+                ? `<a class="twc-sav${statusClass(onlineMap.get(String(uid)))}" href="/profiles.php?XID=${encodeURIComponent(uid)}">${m.sender.avatar ? `<img src="${esc(m.sender.avatar)}" alt="" loading="lazy">` : esc(String(m.sender.name || '?').slice(0, 1))}</a>` : '';
             const tick = mine ? (m.pending ? '<i class="twc-tick">🕓</i>' : m.failed ? '<i class="twc-tick bad">!</i>' : '<i class="twc-tick">✓</i>') : '';
             const cls = ['twc-b', mine ? 'mine' : '', first ? 'first' : '', last ? 'last' : '', room && !mine ? 'indent' : '', jumbo ? 'jumbo' : '',
                 m.pending ? 'pending' : '', m.failed ? 'failed' : '', !mine && mentionsMe(m.content) ? 'mention' : ''].filter(Boolean).join(' ');
