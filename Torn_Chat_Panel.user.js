@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Chat Panel
 // @namespace    https://github.com/nebigoktug
-// @version      0.8.1
+// @version      0.8.2
 // @description  A full-screen messenger-style view of Torn's Chat 3.1: one list of all your chats with last message, time, unread count and online dot, and a bubble view per chat. Torn's own chat does the work underneath: messages are read from what Torn already loads, and sending types into Torn's own message box.
 // @author       Nebigoktug
 // @license      MIT
@@ -47,7 +47,7 @@
     if (window.__twcRunning) return;
     window.__twcRunning = true;
 
-    const VERSION  = '0.8.1';
+    const VERSION  = '0.8.2';
     const REPO_URL = 'https://github.com/nebigoktug/torn-userscripts';
     const LS_CONVS = 'twc_convs';      // chat list (names, last message) for a quick start
     const LS_ME    = 'twc_me';
@@ -623,10 +623,12 @@
         st.textContent = `
         #twc-root { --bg: #0b141a; --panel: #111b21; --head: #202c33; --fg: #e9edef; --muted: #8696a0; --line: #222d34;
             --mine: #005c4b; --theirs: #202c33; --accent: #00a884; --badge: #00a884; --input: #2a3942; --link: #53bdeb; --dots: rgba(255,255,255,.035);
-            --headbar: rgba(18,24,28,.95); --press: rgba(255,255,255,.04); --ring: rgba(255,255,255,.14); --ring-off: rgba(255,255,255,.1); }
+            --headbar: rgba(18,24,28,.95); --press: rgba(255,255,255,.04); --ring: rgba(255,255,255,.14); --ring-off: rgba(255,255,255,.1);
+            --text: #e9edef; --meta: #8696a0; }
         body:not(.dark-mode) #twc-root { --bg: #efeae2; --panel: #fff; --head: #f0f2f5; --fg: #111b21; --muted: #667781; --line: #e9edef;
             --mine: #d9fdd3; --theirs: #fff; --accent: #008069; --badge: #25d366; --input: #fff; --link: #027eb5; --dots: rgba(0,0,0,.05);
-            --headbar: rgba(240,242,245,.95); --press: rgba(0,0,0,.04); --ring: rgba(0,0,0,.12); --ring-off: rgba(0,0,0,.08); }
+            --headbar: rgba(240,242,245,.95); --press: rgba(0,0,0,.04); --ring: rgba(0,0,0,.12); --ring-off: rgba(0,0,0,.08);
+            --text: #111b21; --meta: #667781; }
         #twc-root { position: fixed; inset: 0; z-index: 2147483647; isolation: isolate; display: flex; background: var(--bg); color: var(--fg);
             font: 15px/1.35 -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
         #twc-root * { box-sizing: border-box; }
@@ -647,7 +649,12 @@
         #twc-root .twc-ib { background: none; border: 0; padding: 6px; cursor: pointer; font-size: 20px; line-height: 1; color: var(--muted); }
         #twc-root .twc-ib:hover { color: var(--fg); }
         #twc-root .twc-search { padding: 6px 12px 8px; background: var(--panel); flex: none; }
-        #twc-root .twc-search input { width: 100%; padding: 8px 12px; border-radius: 8px; border: 0; background: var(--head); color: var(--fg); font-size: 14px; outline: none; }
+        #twc-root .twc-sbox { position: relative; display: block; }
+        #twc-root .twc-sbox svg { position: absolute; left: 12px; top: 50%; width: 17px; height: 17px; transform: translateY(-50%); color: var(--muted); pointer-events: none; }
+        #twc-root .twc-search input { width: 100%; padding: 8px 12px 8px 38px; border-radius: 8px; border: 0; background: var(--head); color: var(--fg); font-size: 14px;
+            outline: none; box-shadow: 0 0 0 1px transparent; transition: box-shadow .15s; }
+        #twc-root .twc-search input:focus { box-shadow: 0 0 0 1px var(--accent); }
+        #twc-root .twc-sbox:focus-within svg { color: var(--accent); }
         #twc-root .twc-items { flex: 1; overflow-y: auto; }
         #twc-root .twc-item { display: flex; align-items: center; gap: 12px; padding: 10px 12px; cursor: pointer;
             transition: background-color .12s; -webkit-tap-highlight-color: transparent; }
@@ -695,7 +702,7 @@
         #twc-root .twc-msgs { flex: 1; overflow-y: auto; padding: 8px 4% 10px; display: flex; flex-direction: column; gap: 2px;
             background-color: var(--bg); background-image: radial-gradient(var(--dots) 1px, transparent 1.2px), radial-gradient(var(--dots) 1px, transparent 1.2px);
             background-size: 26px 26px; background-position: 0 0, 13px 13px; overscroll-behavior: contain; }
-        #twc-root .twc-day { position: sticky; top: 4px; z-index: 2; align-self: center; margin: 10px 0; }
+        #twc-root .twc-day { align-self: center; margin: 12px auto; }
         #twc-root .twc-day span { display: inline-block; padding: 3px 10px; border-radius: 999px; background: rgba(11,20,26,.62); font-size: 0.75rem;
             line-height: 1.4; color: #e9edef !important; -webkit-backdrop-filter: blur(4px); backdrop-filter: blur(4px);
             box-shadow: 0 1px .5px rgba(0,0,0,.13); }
@@ -742,11 +749,11 @@
         #twc-root .twc-at { color: var(--link) !important; font-weight: 600; }
         #twc-root .twc-tick { font-style: normal; margin-left: 3px; color: var(--link) !important; }
         #twc-root .twc-tick.bad { color: #e5534b !important; font-weight: 700; }
-        #twc-root .twc-b .twc-txt { font-size: 14.5px; }
+        #twc-root .twc-b .twc-txt { font-size: 14.5px; color: var(--text) !important; }
         #twc-root .twc-b .twc-txt a { color: var(--link) !important; }
         /* Time floats to the bottom-right with at least 16px between it and the text. */
         #twc-root .twc-b .twc-meta { float: right; position: relative; top: 5px; margin: 0 -4px 0 16px; font-size: 11px; line-height: 15px;
-            color: var(--muted); white-space: nowrap; }
+            color: var(--meta) !important; white-space: nowrap; }
         #twc-root .twc-b .twc-txt { line-height: 1.4; }
 
         #twc-root .twc-b.failed { outline: 1px solid #e5534b; }
@@ -755,7 +762,9 @@
             background: var(--input); color: var(--fg); font: inherit; outline: none; }
         #twc-root .twc-send { flex: none; width: 42px; height: 42px; border-radius: 50%; border: 0; background: var(--accent); color: #fff !important;
             font-size: 18px; cursor: pointer; display: flex; align-items: center; justify-content: center; }
-        #twc-root .twc-send:disabled { opacity: .5; }
+        #twc-root .twc-send { transition: opacity .15s, transform .1s; }
+        #twc-root .twc-send:disabled, #twc-root .twc-send.idle { opacity: .5; pointer-events: none; }
+        #twc-root .twc-send:active { transform: scale(.94); }
         #twc-root .twc-count { font-size: 11px; color: var(--muted); align-self: center; }
         #twc-root .twc-count.over { color: #e5534b; font-weight: 700; }
         #twc-root .twc-ebtn { align-self: center; font-size: 22px; padding: 4px; filter: grayscale(.2); }
@@ -769,8 +778,8 @@
         #twc-root .twc-enote { grid-column: 1 / -1; padding: 14px; text-align: center; font-size: 13px; color: var(--muted); }
         #twc-root .twc-err { padding: 6px 12px; font-size: 12.5px; color: #e5534b; background: var(--head); }
         #twc-root .twc-pick { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; color: var(--muted); text-align: center; padding: 20px; }
-        #twc-root .twc-foot { padding: 6px 12px; font-size: 11px; color: var(--muted); border-top: 1px solid var(--line); flex: none; }
-        #twc-root .twc-foot a { color: var(--muted); }
+        #twc-root .twc-about { margin: 10px 18px 0; font-size: 11.5px; color: var(--muted) !important; }
+        #twc-root .twc-about a { color: var(--muted) !important; }
         #twc-root.sz-s { font-size: 13.5px; } #twc-root.sz-s .twc-b .twc-txt { font-size: 13px; }
         #twc-root.sz-l { font-size: 17px; } #twc-root.sz-l .twc-b .twc-txt { font-size: 17px; } #twc-root.sz-l .twc-prev { font-size: 15px; }
         #twc-root.nowall .twc-msgs { background-image: none; }
@@ -824,10 +833,8 @@
         root.innerHTML = `
             <section class="twc-list">
                 <div class="twc-head"><h1>Chats</h1><button class="twc-ib" data-a="settings" title="Settings">⚙</button><button class="twc-ib" data-a="close" title="Close">✕</button></div>
-                <div class="twc-search"><input type="search" placeholder="Search" autocomplete="off"></div>
+                <div class="twc-search"><label class="twc-sbox"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5" fill="none" stroke="currentColor" stroke-width="2"/><path d="M15.5 15.5L20 20" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg><input type="search" placeholder="Search" autocomplete="off"></label></div>
                 <div class="twc-items"></div>
-                <div class="twc-foot">Times in TCT · Torn Chat Panel v${VERSION} · <a href="${REPO_URL}" target="_blank" rel="noopener">GitHub</a>
-                    · <a href="/profiles.php?XID=${AUTHOR.id}">Support ❤️</a></div>
             </section>
             <section class="twc-conv"><div class="twc-pick"><div style="font-size:40px">💬</div>Pick a chat</div></section>`;
         document.body.appendChild(root);
@@ -1040,6 +1047,7 @@
                 `<span>${esc(x.file)} — ${x.blocked ? 'muted' : x.chat ? 'chat' : 'not chat'}, ${tct(x.at)}</span>`).join('')}</div>` : ''}
             <div class="twc-support">Enjoying the panel? A Xanax or a few $ to
                 <a href="/profiles.php?XID=${AUTHOR.id}">${AUTHOR.name} [${AUTHOR.id}]</a> keeps it going ❤️</div>
+            <div class="twc-about">Times are TCT · Torn Chat Panel v${VERSION} · <a href="${REPO_URL}" target="_blank" rel="noopener">GitHub</a></div>
             <button type="button" class="twc-done">Done</button>`);
         const sh = root.querySelector('.twc-sheet');
         sh.addEventListener('click', (e) => { if (e.target.closest('.twc-done')) sh.remove(); });
@@ -1190,7 +1198,9 @@
             count.hidden = !(max <= 200 || n > max * 0.8);
             count.textContent = `${n}/${max}`;
             count.classList.toggle('over', n > max);
-            conv.querySelector('.twc-send').disabled = sending || n > max;
+            const send = conv.querySelector('.twc-send');
+            send.disabled = sending || n > max;
+            send.classList.toggle('idle', !ta.value.trim());
         });
         emojiPicker(conv, ta);
         ta.dispatchEvent(new Event('input'));
