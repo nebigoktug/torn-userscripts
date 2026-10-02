@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Chat Panel
 // @namespace    https://github.com/nebigoktug
-// @version      0.7.0
+// @version      0.7.1
 // @description  A full-screen messenger-style view of Torn's Chat 3.1: one list of all your chats with last message, time, unread count and online dot, and a bubble view per chat. Torn's own chat does the work underneath: messages are read from what Torn already loads, and sending types into Torn's own message box.
 // @author       Nebigoktug
 // @license      MIT
@@ -47,7 +47,7 @@
     if (window.__twcRunning) return;
     window.__twcRunning = true;
 
-    const VERSION  = '0.7.0';
+    const VERSION  = '0.7.1';
     const REPO_URL = 'https://github.com/nebigoktug/torn-userscripts';
     const LS_CONVS = 'twc_convs';      // chat list (names, last message) for a quick start
     const LS_ME    = 'twc_me';
@@ -588,7 +588,14 @@
     const NAME_COLORS = ['#e5786d', '#5fb0e8', '#f0a64b', '#7dcf8a', '#c690e8', '#e8c95f', '#5fd1c4', '#e88fb5'];
     const nameColor = (uid) => NAME_COLORS[Math.abs(Number(uid) || 0) % NAME_COLORS.length];
     function avatarHtml(c) {
-        if (c.type === 'room') return `<span class="twc-av twc-room" style="background:${ROOM_COLORS[c.id] || '#54656f'} !important">${ROOM_ICONS[c.id] || '💬'}</span>`;
+        if (c.type === 'room') {
+            // Situational rooms (Travelling, Hospital, Jail…) have ids we don't know ahead, so go by name too.
+            const n = String(c.name || c.id);
+            const guess = /travel|abroad|flight/i.test(n) ? ['✈️', '#2a7fa8'] : /hosp/i.test(n) ? ['🏥', '#a8323a'] : /jail/i.test(n) ? ['⛓️', '#6b5a3a'] : null;
+            const icon = ROOM_ICONS[c.id] || (guess && guess[0]) || '💬';
+            const bg = ROOM_COLORS[c.id] || (guess && guess[1]) || '#54656f';
+            return `<span class="twc-av twc-room" style="background:${bg} !important">${icon}</span>`;
+        }
         const dot = c.online && /online/i.test(c.online) ? '<i class="twc-dot on"></i>' : c.online && /idle/i.test(c.online) ? '<i class="twc-dot idle"></i>' : '';
         return `<span class="twc-av">${c.avatar ? `<img src="${esc(c.avatar)}" alt="" loading="lazy">` : esc((c.name || '?').slice(0, 1))}${dot}</span>`;
     }
