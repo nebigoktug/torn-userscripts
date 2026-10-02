@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Chat Panel
 // @namespace    https://github.com/nebigoktug
-// @version      0.7.1
+// @version      0.8.0
 // @description  A full-screen messenger-style view of Torn's Chat 3.1: one list of all your chats with last message, time, unread count and online dot, and a bubble view per chat. Torn's own chat does the work underneath: messages are read from what Torn already loads, and sending types into Torn's own message box.
 // @author       Nebigoktug
 // @license      MIT
@@ -47,7 +47,7 @@
     if (window.__twcRunning) return;
     window.__twcRunning = true;
 
-    const VERSION  = '0.7.1';
+    const VERSION  = '0.8.0';
     const REPO_URL = 'https://github.com/nebigoktug/torn-userscripts';
     const LS_CONVS = 'twc_convs';      // chat list (names, last message) for a quick start
     const LS_ME    = 'twc_me';
@@ -585,8 +585,14 @@
         if (k === dayKey(Date.now() - 864e5)) return 'Yesterday';
         return new Date(ms).toLocaleDateString('en-GB', { day: '2-digit', month: '2-digit', timeZone: 'UTC' });
     }
-    const NAME_COLORS = ['#e5786d', '#5fb0e8', '#f0a64b', '#7dcf8a', '#c690e8', '#e8c95f', '#5fd1c4', '#e88fb5'];
-    const nameColor = (uid) => NAME_COLORS[Math.abs(Number(uid) || 0) % NAME_COLORS.length];
+    // Telegram-like palette; the player ID is hashed so neighbouring IDs still get different colours.
+    const NAME_COLORS = ['#e17076', '#7bc862', '#e5ca77', '#65aadd', '#a695e7', '#ee7aae', '#6ec9cb', '#faa774', '#4bc7cf', '#d4a5f5', '#9ccc65', '#ff8a65'];
+    const nameColor = (uid) => {
+        let h = (Number(uid) || 0) >>> 0;
+        h = Math.imul(h ^ (h >>> 16), 0x45d9f3b) >>> 0;
+        h = Math.imul(h ^ (h >>> 16), 0x45d9f3b) >>> 0;
+        return NAME_COLORS[(h ^ (h >>> 16)) % NAME_COLORS.length];
+    };
     function avatarHtml(c) {
         if (c.type === 'room') {
             // Situational rooms (Travelling, Hospital, Jail…) have ids we don't know ahead, so go by name too.
@@ -656,7 +662,7 @@
         #twc-root .twc-av { position: relative; flex: none; width: 46px; height: 46px; border-radius: 50%; background: var(--head);
             display: flex; align-items: center; justify-content: center; font-size: 20px; font-weight: 600; color: var(--muted); }
         #twc-root .twc-av img { width: 100%; height: 100%; border-radius: 50%; object-fit: cover; }
-        #twc-root .twc-head .twc-av { width: 38px; height: 38px; font-size: 17px; }
+        #twc-root .twc-head .twc-av { width: 40px; height: 40px; font-size: 20px; margin-right: 2px; }
         #twc-root .twc-dot { position: absolute; right: 0; bottom: 0; width: 12px; height: 12px; border-radius: 50%; border: 2px solid var(--panel); }
         #twc-root .twc-dot.on { background: #25d366; }
         #twc-root .twc-dot.idle { background: #f0b232; }
@@ -668,6 +674,7 @@
         #twc-root .twc-head .twc-ib { display: flex; align-items: center; justify-content: center; width: 40px; height: 40px; padding: 0;
             border-radius: 50%; flex: none; }
         #twc-root .twc-head .twc-ib:active { background: rgba(255,255,255,.08); }
+        #twc-root .twc-head .twc-back { color: var(--fg) !important; font-size: 24px; margin-right: -2px; }
         #twc-root .twc-ctitle a { color: inherit; text-decoration: none; }
         #twc-root .twc-msgwrap { position: relative; flex: 1; min-height: 0; display: flex; }
         #twc-root .twc-msgs { flex: 1; overflow-y: auto; padding: 8px 4% 10px; display: flex; flex-direction: column; gap: 2px;
@@ -677,6 +684,16 @@
         #twc-root .twc-day span { display: inline-block; padding: 3px 10px; border-radius: 999px; background: rgba(11,20,26,.62); font-size: 0.75rem;
             line-height: 1.4; color: #e9edef !important; -webkit-backdrop-filter: blur(4px); backdrop-filter: blur(4px);
             box-shadow: 0 1px .5px rgba(0,0,0,.13); }
+        #twc-root .twc-unread { align-self: stretch; display: flex; align-items: center; gap: 10px; margin: 14px -4% 6px; padding: 0 4%; }
+        #twc-root .twc-unread::before, #twc-root .twc-unread::after { content: ''; flex: 1; height: 1px; background: rgba(229,83,75,.55); }
+        #twc-root .twc-unread span { padding: 3px 10px; border-radius: 999px; background: rgba(229,83,75,.16); color: #ff8a80 !important;
+            font-size: 0.72rem; font-weight: 600; white-space: nowrap; }
+        #twc-root .twc-jump { position: absolute; right: 14px; bottom: 64px; height: 34px; padding: 0 14px; border-radius: 17px; border: 0; cursor: pointer;
+            background: rgba(32,44,51,.92); color: #e9edef !important; font-size: 13px; font-weight: 600; line-height: 34px; box-shadow: 0 2px 8px rgba(0,0,0,.35);
+            -webkit-backdrop-filter: blur(6px); backdrop-filter: blur(6px); opacity: 0; transform: translateY(6px); transition: opacity .22s, transform .22s; }
+        #twc-root .twc-jump.on { opacity: 1; transform: none; }
+        #twc-root .twc-jump span { display: inline-block; min-width: 18px; margin-left: 4px; padding: 0 6px; border-radius: 9px; background: var(--badge);
+            color: #fff !important; font-size: 11px; line-height: 18px; vertical-align: 1px; }
         #twc-root .twc-down { position: absolute; right: 14px; bottom: 12px; width: 42px; height: 42px; border-radius: 50%; border: 0; cursor: pointer;
             background: var(--head); color: var(--muted) !important; font-size: 22px; line-height: 30px; box-shadow: 0 2px 6px rgba(0,0,0,.3); }
         #twc-root .twc-down b { position: absolute; top: -6px; right: -4px; min-width: 20px; height: 20px; padding: 0 5px; border-radius: 10px;
@@ -698,7 +715,7 @@
         #twc-root .twc-b.mine.last { border-bottom-right-radius: 12px; }
         #twc-root .twc-b.mine.first::before { left: auto; right: -8px; border-width: 0 0 10px 8px; border-color: transparent transparent transparent var(--mine); }
         #twc-root .twc-b.indent { margin-left: 36px; }
-        #twc-root .twc-sav { position: absolute; left: -44px; top: 0; width: 30px; height: 30px; border-radius: 50%; overflow: hidden; background: var(--head);
+        #twc-root .twc-sav { position: absolute; left: -42px; top: 0; width: 32px; height: 32px; border-radius: 50%; overflow: hidden; background: var(--head);
             display: flex; align-items: center; justify-content: center; font-size: 13px; font-weight: 600; color: var(--muted) !important; text-decoration: none; }
         #twc-root .twc-sav img { width: 100%; height: 100%; object-fit: cover; }
         #twc-root .twc-b .twc-from { display: block; font-size: 13px; font-weight: 600; margin-bottom: 1px; text-decoration: none; }
@@ -1134,7 +1151,8 @@
                 <button class="twc-ib" data-a="close2" title="Close">✕</button>
             </div>
             <div class="twc-msgwrap"><div class="twc-msgs"></div>
-                <button type="button" class="twc-down" hidden title="Newest messages"><b hidden></b>⌄</button></div>
+                <button type="button" class="twc-down" hidden title="Newest messages"><b hidden></b>⌄</button>
+                <button type="button" class="twc-jump" hidden title="First unread message">↑ <span></span></button></div>
             <div class="twc-err" hidden></div>
             <div class="twc-emoji" hidden><div class="twc-etabs"></div><div class="twc-egrid"></div></div>
             <div class="twc-compose">
@@ -1170,7 +1188,15 @@
         box_.addEventListener('scroll', () => { if (box_.scrollTop < 60) loadOlder(); paintDown(); }, { passive: true });
         conv.querySelector('.twc-down').addEventListener('click', () => { box_.scrollTo({ top: box_.scrollHeight, behavior: 'smooth' }); newBelow = 0; });
         newBelow = 0; shownCount = 0;
+        // Where the unread part starts: fixed to a message once the history is in.
+        unreadMark = { key, count: Number(c.unread) || 0, id: null, seen: false };
         c.unread = 0;
+        conv.querySelector('.twc-jump').addEventListener('click', () => {
+            const div = box_.querySelector('.twc-unread');
+            if (div) div.scrollIntoView({ behavior: 'smooth', block: 'start' });
+            unreadMark.seen = true;
+            paintJump();
+        });
         paintHeader();
         renderMessages(false, true);
         renderList();
@@ -1227,15 +1253,26 @@
             return dayKey(at) !== dayKey(pat) || (m.sender && m.sender.userId) !== (p.sender && p.sender.userId) || at - pat > 5 * 60000;
         });
         let lastDay = '', idx = -1;
+        if (unreadMark && unreadMark.key === c.key && unreadMark.count && !unreadMark.id && b.loaded && b.list.length) {
+            const real = b.list.filter((x) => !x.pending && !isMine(c.key, x));
+            const at = real[Math.max(0, real.length - unreadMark.count)];
+            unreadMark.id = at ? at.messageId : null;
+            unreadMark.partial = unreadMark.count > real.length;
+        }
+        const unreadId = unreadMark && unreadMark.key === c.key ? unreadMark.id : null;
         const room = c.type === 'room';
         b.list.forEach((m) => {
             idx++;
             const at = m.createdAt || Date.now();
             const d = dayKey(at);
             if (d !== lastDay) { html += `<div class="twc-day"><span>${dayLabel(at)}</span></div>`; lastDay = d; }
+            if (unreadId && m.messageId === unreadId) {
+                const n = unreadMark.count;
+                html += `<div class="twc-unread"><span>${n > 99 ? '99+' : n} unread message${n === 1 ? '' : 's'}${unreadMark.partial ? ' (older ones not loaded)' : ''}</span></div>`;
+            }
             const mine = isMine(c.key, m);
             const uid = m.sender && m.sender.userId;
-            const first = starts[idx];
+            const first = starts[idx] || (unreadId && m.messageId === unreadId);
             const last = idx === b.list.length - 1 || starts[idx + 1];
             const jumbo = isJumbo(m.content);
             const from = room && !mine && first && m.sender
@@ -1255,8 +1292,25 @@
         shownCount = b.list.length;
         paintDown();
     }
-    let newBelow = 0, shownCount = 0;
+    let newBelow = 0, shownCount = 0, unreadMark = null;
+    // "↑ N" until the unread divider has been on screen once (or tapped).
+    function paintJump() {
+        const el = root && root.querySelector('.twc-msgs');
+        const btn = root && root.querySelector('.twc-jump');
+        if (!el || !btn) return;
+        const div = el.querySelector('.twc-unread');
+        if (div && !unreadMark.seen) {
+            const r = div.getBoundingClientRect(), v = el.getBoundingClientRect();
+            if (r.bottom > v.top && r.top < v.bottom && v.height > 0) unreadMark.seen = true;
+        }
+        const show = !!div && !unreadMark.seen;
+        btn.querySelector('span').textContent = unreadMark && unreadMark.count > 99 ? '99+' : String((unreadMark && unreadMark.count) || '');
+        btn.classList.toggle('on', show);
+        if (show) btn.hidden = false;
+        else if (!btn.hidden) setTimeout(() => { if (!btn.classList.contains('on')) btn.hidden = true; }, 250);
+    }
     function paintDown() {
+        paintJump();
         const el = root && root.querySelector('.twc-msgs');
         const btn = root && root.querySelector('.twc-down');
         if (!el || !btn) return;
