@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Chat Panel
 // @namespace    https://github.com/nebigoktug
-// @version      1.1.0
+// @version      1.1.1
 // @description  A full-screen messenger-style view of Torn's Chat 3.1: one list of all your chats with last message, time, unread count and online dot, and a bubble view per chat. Torn's own chat does the work underneath: messages are read from what Torn already loads, and sending types into Torn's own message box.
 // @author       Nebigoktug
 // @license      MIT
@@ -26,7 +26,10 @@
  * chat whose messages Torn hasn't loaded on this page (a private chat whose
  * window was already open, for example), the script asks Torn's chat for
  * that chat's latest 50 messages once — the same request Torn's own chat
- * makes. Nothing is requested automatically.
+ * makes. And when you have read a chat to the bottom, it first lets Torn's
+ * own window mark it read; only if Torn doesn't, it sends Torn's own "read"
+ * request for that chat once, so the unread count doesn't come back on the
+ * next page. Nothing is requested in the background.
  *
  * Torn's chat keeps running underneath the panel. When you tap a chat, the
  * matching button in Torn's chat bar is tapped so Torn opens (and loads) that
@@ -47,7 +50,7 @@
     if (window.__twcRunning) return;
     window.__twcRunning = true;
 
-    const VERSION  = '1.1.0';
+    const VERSION  = '1.1.1';
     const REPO_URL = 'https://github.com/nebigoktug/torn-userscripts';
     const LS_CONVS = 'twc_convs';      // chat list (names, last message) for a quick start
     const LS_ME    = 'twc_me';
@@ -234,6 +237,7 @@
     function onJson(path, data) {
         let m;
         health.json = true;
+        if ((m = path.match(/^\/tchat\/(rooms|dm)\/([^/]+)\/read$/))) { readDone(m[1] === 'rooms' ? roomKey(m[2]) : dmKey(m[2])); return; }
         if (path === '/tchat/rooms' && data && Array.isArray(data.items)) {
             data.items.forEach((r) => { if (!r.isLeft) conv(roomKey(r.id), { type: 'room', id: r.id, name: decode(r.name), rules: r.rules || null }); });
         } else if ((m = path.match(/^\/tchat\/rooms\/([^/]+)\/join$/)) && data && data.id) {
@@ -317,6 +321,7 @@
                 addMessages(key, [m]);
                 const c = convs.get(key);
                 if (key !== currentKey && !isMine(key, m)) c.unread = (c.unread || 0) + 1;
+                if (key === currentKey && !isMine(key, m)) needRead(key);
                 if (key === currentKey) renderMessages(false, true);
                 saveConvs();
                 renderSoon();
@@ -326,6 +331,7 @@
                 const key = /room/i.test(rs.scope || '') ? roomKey(rs.id) : convs.has(dmKey(rs.id)) ? dmKey(rs.id) : roomKey(rs.id);
                 const c = convs.get(key);
                 if (c) { c.unread = Number(rs.snapshotUnreadCount) || 0; renderSoon(); }
+                if (!Number(rs.snapshotUnreadCount)) readDone(key);
             }
         });
     }
@@ -341,8 +347,10 @@
             try {
                 const path = pathOf(typeof input === 'string' ? input : (input && input.url) || '');
                 if (path.startsWith('/tchat/')) {
-                    p.then((r) => (/json/.test(r.headers.get('content-type') || '') ? r.clone().json() : null))
-                        .then((d) => { if (d) onJson(path, d); }).catch(() => {});
+                    p.then((r) => {
+                        if (/\/read$/.test(path)) { if (r.ok) onJson(path, {}); return null; }
+                        return /json/.test(r.headers.get('content-type') || '') ? r.clone().json() : null;
+                    }).then((d) => { if (d) onJson(path, d); }).catch(() => {});
                 }
             } catch (e) {}
             return p;
@@ -357,6 +365,8 @@
                 const path = this.__twcPath;
                 this.addEventListener('load', () => {
                     try {
+                        // "read" answers are empty: report a successful one by its path.
+                        if (/\/read$/.test(path)) { if (this.status >= 200 && this.status < 300) onJson(path, {}); return; }
                         const d = this.responseType === 'json' ? this.response : JSON.parse(this.responseText);
                         onJson(path, d);
                     } catch (e) {}
@@ -449,6 +459,42 @@
     // One request, only after a tap on a chat Torn hasn't loaded: the same
     // address Torn's chat uses. It goes through the fetch hook above, so the
     // answer is read like Torn's own.
+    // ---- read state
+    // A chat you open with unread messages (or that gets new ones while open)
+    // waits to be marked read until you are at the bottom of it.
+    const readState = new Map();          // key -> { pending, busy, lastSent }
+    const readFails = { dm: 0, rooms: 0 };
+    function needRead(key) { const r = readState.get(key) || {}; r.pending = true; readState.set(key, r); }
+    function readDone(key) { const r = readState.get(key); if (r) r.pending = false; }
+    async function markReadIfSeen() {
+        const c = convs.get(currentKey);
+        const el = root && root.querySelector('.twc-msgs');
+        const r = c && readState.get(c.key);
+        if (!c || !el || !r || !r.pending || r.busy || document.hidden) return;
+        if (el.scrollHeight - el.scrollTop - el.clientHeight > 120) return;
+        if (Date.now() - (r.lastSent || 0) < 10000) return;
+        r.busy = true;
+        try {
+            // First let Torn do it: its window at the bottom is what Torn itself reacts to.
+            const win = tornWindow(c);
+            if (win) win.querySelectorAll('*').forEach((x) => {
+                if (x.scrollHeight > x.clientHeight + 4 && /(auto|scroll)/.test(getComputedStyle(x).overflowY)) {
+                    x.scrollTop = x.scrollHeight;
+                    x.dispatchEvent(new Event('scroll'));
+                }
+            });
+            await waitFor(() => !r.pending, 1500);
+            const type = c.type === 'dm' ? 'dm' : 'rooms';
+            if (r.pending && readFails[type] < 2) {
+                r.lastSent = Date.now();
+                const resp = await window.fetch(`/tchat/${type}/${encodeURIComponent(c.id)}/read`,
+                    { method: 'POST', credentials: 'same-origin', headers: { accept: 'application/json' } });
+                if (resp.ok) r.pending = false; else readFails[type]++;
+            }
+        } catch (e) { /* try again on the next visit to the bottom */ }
+        r.busy = false;
+    }
+
     const historyAsked = new Set();
     async function fetchHistory(c) {
         if (historyAsked.has(c.key)) return '';
@@ -1323,6 +1369,7 @@
         newBelow = 0; shownCount = 0;
         // Where the unread part starts: fixed to a message once the history is in.
         unreadMark = { key, count: Number(c.unread) || 0, id: null, seen: false };
+        if (unreadMark.count) needRead(key);
         c.unread = 0;
         conv.querySelector('.twc-jump').addEventListener('click', () => {
             const div = box_.querySelector('.twc-unread');
@@ -1444,6 +1491,7 @@
     }
     function paintDown() {
         paintJump();
+        markReadIfSeen();
         const el = root && root.querySelector('.twc-msgs');
         const btn = root && root.querySelector('.twc-down');
         if (!el || !btn) return;

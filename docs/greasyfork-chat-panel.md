@@ -24,7 +24,11 @@ Torn's own chat keeps doing the work underneath. The panel reads the messages To
 
 The script makes **no API calls** and needs **no API key**. It only reads what Torn's chat already loads on the page you are viewing.
 
-The one non-API request it can make: when you tap a chat whose messages Torn hasn't loaded on this page, it asks Torn's chat once for that chat's latest 50 messages. This is the same request Torn's own chat makes, and it only happens on your tap. Nothing is requested automatically or in the background.
+It can make two non-API requests, both the same ones Torn's own chat makes and both only after something you did:
+- When you tap a chat whose messages Torn hasn't loaded on this page, it asks Torn's chat once for that chat's latest 50 messages.
+- When you have read a chat to the bottom, it first lets Torn's own (hidden) chat window mark it as read. Only if Torn doesn't, it sends Torn's "read" request for that chat once, so the unread count doesn't come back on the next page.
+
+Nothing is requested automatically or in the background.
 
 Everything it stores (the chat list, your settings, emoji counts) stays in your browser.
 
