@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Chat Panel
 // @namespace    https://github.com/nebigoktug
-// @version      1.1.6
+// @version      1.1.7
 // @description  A full-screen messenger-style view of Torn's Chat 3.1: one list of all your chats with last message, time, unread count and online dot, and a bubble view per chat. Torn's own chat does the work underneath: messages are read from what Torn already loads, and sending types into Torn's own message box.
 // @author       Nebigoktug
 // @license      MIT
@@ -51,7 +51,7 @@
     if (window.__twcRunning) return;
     window.__twcRunning = true;
 
-    const VERSION  = '1.1.6';
+    const VERSION  = '1.1.7';
     const REPO_URL = 'https://github.com/nebigoktug/torn-userscripts';
     const LS_CONVS = 'twc_convs';      // chat list (names, last message) for a quick start
     const LS_ME    = 'twc_me';
@@ -1231,6 +1231,9 @@
         renderList();
     }
 
+    // Torn's server stops counting unread messages at 99, so 99 means "99 or more".
+    const countText = (n) => (Number(n) >= 99 ? '99+' : String(n));
+
     let renderQueued = false;
     function renderSoon() {
         paintUnreadSoon();
@@ -1247,7 +1250,7 @@
     function paintUnread() {
         let n = 0;
         convs.forEach((c) => { if (!c.stale && !isMuted(c.key)) n += Number(c.unread) || 0; });
-        const label = n ? (n > 99 ? '99+' : String(n)) : '';
+        const label = n ? countText(n) : '';
         const el = document.getElementById('twc-btn');
         if (!el) return;
         if (label) el.setAttribute('data-twc-unread', label); else el.removeAttribute('data-twc-unread');
@@ -1311,7 +1314,7 @@
                         <span class="twc-prev">${l ? esc(who + String(l.content).replace(/\s+/g, ' ')) : '&nbsp;'}</span></div>
                     <div class="twc-side"><span class="twc-time">${listTime(l && l.createdAt)}</span>
                         <span class="twc-flags">${muted ? '<i class="twc-ico" title="Muted">🔕</i>' : ''}${isPinned(c.key) ? '<i class="twc-ico" title="Pinned">📌</i>' : ''}` +
-                        `${c.unread ? `<span class="twc-badge">${c.unread > 99 ? '99+' : c.unread}</span>` : ''}</span></div>
+                        `${c.unread ? `<span class="twc-badge">${countText(c.unread)}</span>` : ''}</span></div>
                 </div></div>`;
         }).join('');
     }
@@ -1483,7 +1486,7 @@
             if (d !== lastDay) { html += `<div class="twc-day"><span>${dayLabel(at)}</span></div>`; lastDay = d; }
             if (unreadId && m.messageId === unreadId) {
                 const n = unreadMark.count;
-                html += `<div class="twc-unread"><span>${n > 99 ? '99+' : n} unread message${n === 1 ? '' : 's'}${unreadMark.partial ? ' (older ones not loaded)' : ''}</span></div>`;
+                html += `<div class="twc-unread"><span>${countText(n)} unread message${n === 1 ? '' : 's'}${unreadMark.partial ? ' (older ones not loaded)' : ''}</span></div>`;
             }
             const mine = isMine(c.key, m);
             const uid = m.sender && m.sender.userId;
@@ -1526,7 +1529,7 @@
             if (r.bottom > v.top && r.top < v.bottom && v.height > 0) unreadMark.seen = true;
         }
         const show = !!div && !unreadMark.seen;
-        btn.querySelector('span').textContent = unreadMark && unreadMark.count > 99 ? '99+' : String((unreadMark && unreadMark.count) || '');
+        btn.querySelector('span').textContent = unreadMark && unreadMark.count ? countText(unreadMark.count) : '';
         btn.classList.toggle('on', show);
         if (show) btn.hidden = false;
         else if (!btn.hidden) setTimeout(() => { if (!btn.classList.contains('on')) btn.hidden = true; }, 250);
