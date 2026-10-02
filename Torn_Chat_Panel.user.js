@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Chat Panel
 // @namespace    https://github.com/nebigoktug
-// @version      1.1.3
+// @version      1.1.4
 // @description  A full-screen messenger-style view of Torn's Chat 3.1: one list of all your chats with last message, time, unread count and online dot, and a bubble view per chat. Torn's own chat does the work underneath: messages are read from what Torn already loads, and sending types into Torn's own message box.
 // @author       Nebigoktug
 // @license      MIT
@@ -51,7 +51,7 @@
     if (window.__twcRunning) return;
     window.__twcRunning = true;
 
-    const VERSION  = '1.1.3';
+    const VERSION  = '1.1.4';
     const REPO_URL = 'https://github.com/nebigoktug/torn-userscripts';
     const LS_CONVS = 'twc_convs';      // chat list (names, last message) for a quick start
     const LS_ME    = 'twc_me';
@@ -848,8 +848,7 @@
             background: rgba(32,44,51,.92); box-shadow: 0 2px 8px rgba(0,0,0,.35);
             -webkit-backdrop-filter: blur(6px); backdrop-filter: blur(6px); opacity: 0; transform: translateY(6px); transition: opacity .22s, transform .22s; }
         #twc-root .twc-jump button { border: 0; background: none; cursor: pointer; color: #e9edef !important; font-size: 13px; font-weight: 600; line-height: 34px; }
-        #twc-root .twc-jumpgo { padding: 0 8px 0 14px; }
-        #twc-root .twc-jumpx { padding: 0 12px 0 8px; border-left: 1px solid rgba(255,255,255,.12) !important; color: #8696a0 !important; }
+        #twc-root .twc-jumpgo { padding: 0 14px; }
         #twc-root .twc-jump.on { opacity: 1; transform: none; }
         #twc-root .twc-jump span { display: inline-block; min-width: 18px; margin-left: 4px; padding: 0 6px; border-radius: 9px; background: var(--badge);
             color: #fff !important; font-size: 11px; line-height: 18px; vertical-align: 1px; }
@@ -1333,8 +1332,7 @@
             </div>
             <div class="twc-msgwrap"><div class="twc-msgs"></div>
                 <button type="button" class="twc-down" hidden title="Newest messages"><b hidden></b>⌄</button>
-                <div class="twc-jump" hidden><button type="button" class="twc-jumpgo" title="First unread message">↑ <span></span></button>` +
-                `<button type="button" class="twc-jumpx" title="Mark all as read">✕</button></div></div>
+                <div class="twc-jump" hidden><button type="button" class="twc-jumpgo" title="First unread message">↑ <span></span></button></div></div>
             <div class="twc-err" hidden></div>
             <div class="twc-emoji" hidden><div class="twc-etabs"></div><div class="twc-egrid"></div></div>
             <div class="twc-compose">
@@ -1392,20 +1390,15 @@
         unreadMark = { key, count: Number(c.unread) || 0, id: null, seen: false };
         if (unreadMark.count) needRead(key);
         c.unread = 0;
+        // ↑ N: jump to the first unread message, and (like the ✕ on Torn's own pill)
+        // count them all as read right away; the divider stays as a marker.
         conv.querySelector('.twc-jumpgo').addEventListener('click', () => {
             const div = box_.querySelector('.twc-unread');
             if (div) div.scrollIntoView({ behavior: 'smooth', block: 'start' });
             unreadMark.seen = true;
             paintJump();
-        });
-        // ✕: like the ✕ on Torn's own pill, everything counts as read without scrolling up.
-        conv.querySelector('.twc-jumpx').addEventListener('click', () => {
-            unreadMark.seen = true;
-            unreadMark.count = 0;
-            unreadMark.id = null;
             needRead(key);
             markRead(c, true);
-            renderMessages();
         });
         paintHeader();
         renderMessages(false, true);

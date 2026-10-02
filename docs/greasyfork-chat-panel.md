@@ -6,7 +6,7 @@ Torn's own chat keeps doing the work underneath. The panel reads the messages To
 
 - **One chat list**: faction, company, global, trade, travel and private chats together, newest first. Each row shows the avatar, the last message, the time and the unread count. Private chats show an online dot.
 - **Bubble conversations**: messages from the same person are grouped, with avatars and coloured names in group chats. Links are clickable, emoji-only messages are shown larger, and @mentions of you are highlighted.
-- **Unread messages**: a divider marks where the unread part starts, a `↑ N` button jumps straight to it, and its `✕` marks everything read without scrolling up. Read chats stay read after a page reload.
+- **Unread messages**: a divider marks where the unread part starts, and a `↑ N` button jumps straight to it and marks them all read. Read chats stay read after a page reload.
 - **Emoji picker**: recent emojis, the ones most used in your own chats, a Torn set (💰🌸🧸✈️💊🔫…) and the usual categories.
 - **Long-press menus**: on a message: reply (@name), copy, open link, open profile, message privately. On a chat: pin to top, mute.
 - **Phone-friendly**: the Back button moves between chat and list, the message box stays above the keyboard, and the unread total sits on the chat button.
@@ -26,7 +26,7 @@ The script makes **no API calls** and needs **no API key**. It only reads what T
 
 It can make two non-API requests, both the same ones Torn's own chat makes and both only after something you did:
 - When you tap a chat whose messages Torn hasn't loaded on this page, it asks Torn's chat once for that chat's latest 50 messages.
-- When you have read a chat to the bottom (or tap `✕` on the unread pill), it first lets Torn's own hidden chat window mark it as read: scrolled to the bottom, then the `✕` on Torn's own "new messages" pill. Only if Torn doesn't, it sends Torn's "read" request for that chat once, so the unread count doesn't come back on the next page.
+- When you have read a chat to the bottom (or tap `↑ N`), it first lets Torn's own hidden chat window mark it as read: scrolled to the bottom, then the `✕` on Torn's own "new messages" pill. Only if Torn doesn't, it sends Torn's "read" request for that chat once, so the unread count doesn't come back on the next page.
 
 Nothing is requested automatically or in the background.
 
