@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Chat Panel
 // @namespace    https://github.com/nebigoktug
-// @version      1.0.0
+// @version      1.1.0
 // @description  A full-screen messenger-style view of Torn's Chat 3.1: one list of all your chats with last message, time, unread count and online dot, and a bubble view per chat. Torn's own chat does the work underneath: messages are read from what Torn already loads, and sending types into Torn's own message box.
 // @author       Nebigoktug
 // @license      MIT
@@ -47,7 +47,7 @@
     if (window.__twcRunning) return;
     window.__twcRunning = true;
 
-    const VERSION  = '1.0.0';
+    const VERSION  = '1.1.0';
     const REPO_URL = 'https://github.com/nebigoktug/torn-userscripts';
     const LS_CONVS = 'twc_convs';      // chat list (names, last message) for a quick start
     const LS_ME    = 'twc_me';
@@ -58,7 +58,7 @@
     const LS_PREFS = 'twc_prefs';
     const AUTHOR = { name: 'Nebigoktug', id: 3980062 };
     const touch = 'ontouchstart' in window;
-    const prefs = Object.assign({ size: 'm', enterSends: !touch, wallpaper: true, ffbs: true, hideTorn: true, closeTornWins: true, muteSound: false, pinned: [], muted: [] },
+    const prefs = Object.assign({ size: 'm', enterSends: !touch, wallpaper: true, ffbs: true, hideTorn: true, closeTornWins: true, muteSound: false, images: 'trusted', pinned: [], muted: [] },
         (() => { try { return JSON.parse(localStorage.getItem(LS_PREFS) || '{}') || {}; } catch (e) { return {}; } })());
     const savePrefs = () => lsSet(LS_PREFS, JSON.stringify(prefs));
 
@@ -606,10 +606,45 @@
 
     // ------------------------------------------------------------ formatting
     const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-    const linkify = (s) => esc(s)
-        .replace(/\bhttps?:\/\/[^\s<]+/g, (u) => `<a href="${u}" target="_blank" rel="noopener">${u.replace(/^https?:\/\/(www\.)?/, '').replace(/^(.{42}).+$/, '$1…')}</a>`)
-        .replace(/(^|[\s(])@([A-Za-z0-9_-]{2,20})/g, (a, pre, n) => `${pre}<b class="twc-at">@${n}</b>`)
-        .replace(/\n/g, '<br>');
+    // ---- image previews
+    // A link ending in .jpg/.jpeg/.png/.gif/.webp (query string allowed) is shown
+    // as the image itself. Loading an image tells its host your IP address, so by
+    // default only well-known image hosts are previewed (a setting: off / trusted
+    // / all). Images that fail to load turn back into plain links for good.
+    const IMG_EXT_RE = /\.(jpe?g|png|gif|webp)$/i;
+    const TRUSTED_IMG_HOSTS = /(^|\.)(imgur\.com|ibb\.co|discordapp\.(com|net)|discord\.com|tenor\.com|giphy\.com|redd\.it|twimg\.com|torn\.com|postimg\.cc|gyazo\.com|imgbox\.com)$/i;
+    const brokenImgs = new Set();
+    function previewable(url) {
+        if (prefs.images === 'off' || brokenImgs.has(url)) return false;
+        let u;
+        try { u = new URL(url); } catch (e) { return false; }
+        if (u.protocol !== 'https:' || !IMG_EXT_RE.test(u.pathname)) return false;
+        return prefs.images === 'all' || TRUSTED_IMG_HOSTS.test(u.hostname);
+    }
+    function linkHtml(u) {
+        // u is already HTML-escaped; the real URL is needed for the checks.
+        const raw = decode(u);
+        if (previewable(raw)) {
+            return `<a class="twc-imglink" href="${u}" target="_blank" rel="noopener noreferrer" data-url="${u}">` +
+                `<img class="twc-img" src="${u}" loading="lazy" decoding="async" referrerpolicy="no-referrer" alt="Image"></a>`;
+        }
+        return `<a href="${u}" target="_blank" rel="noopener">${u.replace(/^https?:\/\/(www\.)?/, '').replace(/^(.{42}).+$/, '$1…')}</a>`;
+    }
+    // Rendered message text, by content: the whole list is redrawn on every new
+    // message, so each text is only worked through once.
+    const linkifyCache = new Map();
+    function linkify(s) {
+        const key = prefs.images + '|' + s;
+        const hit = linkifyCache.get(key);
+        if (hit !== undefined) return hit;
+        const html = esc(s)
+            .replace(/\bhttps?:\/\/[^\s<]+/g, linkHtml)
+            .replace(/(^|[\s(])@([A-Za-z0-9_-]{2,20})/g, (a, pre, n) => `${pre}<b class="twc-at">@${n}</b>`)
+            .replace(/\n/g, '<br>');
+        if (linkifyCache.size > 3000) linkifyCache.clear();
+        linkifyCache.set(key, html);
+        return html;
+    }
     const pad = (n) => String(n).padStart(2, '0');
     const tct = (ms) => { const d = new Date(ms); return pad(d.getUTCHours()) + ':' + pad(d.getUTCMinutes()); };
     const dayKey = (ms) => new Date(ms).toISOString().slice(0, 10);
@@ -783,6 +818,10 @@
         #twc-root .twc-b.jumbo .twc-meta { top: 14px; }
         #twc-root .twc-b.mention { box-shadow: inset 3px 0 0 var(--accent), 0 1px .5px rgba(0,0,0,.13); }
         #twc-root .twc-at { color: var(--link) !important; font-weight: 600; }
+        #twc-root .twc-imglink { display: block; width: fit-content; }
+        #twc-root .twc-img { display: block; max-width: 250px; max-height: 200px; width: auto; height: auto; min-width: 60px; min-height: 40px;
+            border-radius: 8px; object-fit: cover; cursor: pointer; margin-top: 4px; background: rgba(134,150,160,.12); }
+        @media (max-width: 360px) { #twc-root .twc-img { max-width: 100%; } }
         #twc-root .twc-tick { font-style: normal; margin-left: 3px; color: var(--link) !important; }
         #twc-root .twc-tick.bad { color: #e5534b !important; font-weight: 700; }
         #twc-root .twc-b .twc-txt { font-size: 14.5px; color: var(--text) !important; }
@@ -1094,6 +1133,8 @@
             ${row('Hide Torn\'s own chat <small>(it keeps running underneath; turn off to reach Torn\'s chat settings)</small>', chk('hideTorn'))}
             ${row('Close the Torn chat windows the panel opened, when it closes', chk('closeTornWins'))}
             ${row('Mute chat sounds <small>(only sounds that come from Torn\'s chat)</small>', chk('muteSound'))}
+            ${row('Image previews <small>(loading an image shows its host your IP; "trusted" = imgur, Discord, Tenor, Giphy, Torn…)</small>',
+                sel('images', [['trusted', 'Trusted hosts'], ['all', 'All links'], ['off', 'Off']]))}
             ${soundsSeen.length ? `<div class="twc-sounds">Sounds on this page: ${soundsSeen.map((x) =>
                 `<span>${esc(x.file)} — ${x.blocked ? 'muted' : x.chat ? 'chat' : 'not chat'}, ${tct(x.at)}</span>`).join('')}</div>` : ''}
             <div class="twc-support">Enjoying the panel? A Xanax or a few $ to
@@ -1262,6 +1303,22 @@
         conv.querySelector('.twc-send').addEventListener('click', doSend);
         const box_ = conv.querySelector('.twc-msgs');
         box_.addEventListener('scroll', () => { if (box_.scrollTop < 60) loadOlder(); paintDown(); }, { passive: true });
+        // Images load after the text: stay at the bottom if the reader was there.
+        let atBottom = true;
+        box_.addEventListener('scroll', () => { atBottom = box_.scrollHeight - box_.scrollTop - box_.clientHeight < 80; }, { passive: true });
+        box_.addEventListener('load', (e) => {
+            if (e.target.classList && e.target.classList.contains('twc-img') && atBottom) box_.scrollTop = box_.scrollHeight;
+        }, true);
+        box_.addEventListener('error', (e) => {
+            const img = e.target;
+            if (!img.classList || !img.classList.contains('twc-img')) return;
+            const a = img.closest('.twc-imglink');
+            const url = decode(a.getAttribute('data-url'));
+            brokenImgs.add(url);
+            linkifyCache.clear();
+            a.classList.remove('twc-imglink');
+            a.textContent = url.replace(/^https?:\/\/(www\.)?/, '').replace(/^(.{42}).+$/, '$1…');
+        }, true);
         conv.querySelector('.twc-down').addEventListener('click', () => { box_.scrollTo({ top: box_.scrollHeight, behavior: 'smooth' }); newBelow = 0; });
         newBelow = 0; shownCount = 0;
         // Where the unread part starts: fixed to a message once the history is in.
