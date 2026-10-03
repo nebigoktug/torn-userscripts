@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Stock Dip Finder
 // @namespace    https://github.com/nebigoktug
-// @version      1.2.0
+// @version      1.2.1
 // @description  Swing-trading helper for Torn's stock market: shows which stock has dipped furthest below its recent average (a buy candidate), and for your open trades the target sell price and the "sell by" day. Rule backtested on ~5 years of daily prices. Display only: you buy and sell yourself.
 // @author       Nebigoktug
 // @license      MIT
@@ -45,7 +45,7 @@
     if (window.__tsdRunning) return;
     window.__tsdRunning = true;
 
-    const VERSION  = '1.2.0';
+    const VERSION  = '1.2.1';
     const REPO_URL = 'https://github.com/nebigoktug/torn-userscripts';
     const LS_KEY   = 'tsd_api_key';
     const LS_PREFS = 'tsd_prefs';
@@ -679,7 +679,8 @@
             #nth-hub-menu i svg, #nth-hub-settings i svg { width: 18px; height: 18px; }
             #nth-hub-settings i { width: 22px; height: 22px; border-radius: 5px; }
             #nth-hub-settings i svg { width: 15px; height: 15px; }
-            #nth-hub-settings [data-hub-row] { cursor: pointer; }
+            #nth-hub-settings > div:last-child { display: flex !important; flex-direction: column; align-items: flex-start; gap: 6px; }
+            #nth-hub-settings [data-hub-row] { cursor: pointer; margin: 0 !important; }
             #nth-hub-settings.nth-plain { display: flex; flex-direction: column; gap: 4px; margin: 0 0 12px; }
             #nth-hub-settings.nth-plain > span { font: bold 13px Arial, Helvetica, sans-serif; color: #ccc; }
             #nth-hub-settings.nth-plain button {

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Pre-flight Checklist
 // @namespace    https://github.com/nebigoktug
-// @version      1.5.0
+// @version      1.5.1
 // @description  Before you fly: will your energy or nerve cap while you're away, will a drug / booster cooldown run out mid-flight, is your cash right for the trip, and is there a ranked war, chain or Organized Crime you'd miss. Checks against the real round-trip time for the destination and flight type you pick on the Travel Agency. Display only, no automation.
 // @author       Nebigoktug
 // @license      MIT
@@ -38,7 +38,7 @@
     if (window.__tpcRunning) return;
     window.__tpcRunning = true;
 
-    const VERSION  = '1.5.0';
+    const VERSION  = '1.5.1';
     const REPO_URL = 'https://github.com/nebigoktug/torn-userscripts';
     const LS_KEY   = 'tpc_api_key';
     const LS_PREFS = 'tpc_prefs';
@@ -778,7 +778,8 @@
             #nth-hub-menu i svg, #nth-hub-settings i svg { width: 18px; height: 18px; }
             #nth-hub-settings i { width: 22px; height: 22px; border-radius: 5px; }
             #nth-hub-settings i svg { width: 15px; height: 15px; }
-            #nth-hub-settings [data-hub-row] { cursor: pointer; }
+            #nth-hub-settings > div:last-child { display: flex !important; flex-direction: column; align-items: flex-start; gap: 6px; }
+            #nth-hub-settings [data-hub-row] { cursor: pointer; margin: 0 !important; }
             #nth-hub-settings.nth-plain { display: flex; flex-direction: column; gap: 4px; margin: 0 0 12px; }
             #nth-hub-settings.nth-plain > span { font: bold 13px Arial, Helvetica, sans-serif; color: #ccc; }
             #nth-hub-settings.nth-plain button {

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Points Market Shield
 // @namespace    https://github.com/nebigoktug
-// @version      1.1.0
+// @version      1.1.1
 // @description  Fat-finger guard for selling points: blocks a listing priced below a hard floor ($28,000 by default) and asks for a second confirmation when the price is below 95% of the cheapest current listings. Never lists, buys or clicks anything itself.
 // @author       Nebigoktug
 // @license      MIT
@@ -42,7 +42,7 @@
     if (window.__pmaRunning) return;
     window.__pmaRunning = true;
 
-    const VERSION  = '1.1.0';
+    const VERSION  = '1.1.1';
     const REPO_URL = 'https://github.com/nebigoktug/torn-userscripts';
     const LS_KEY   = 'pma_api_key';
     const LS_PREFS = 'pma_prefs';
@@ -509,7 +509,8 @@
             #nth-hub-menu i svg, #nth-hub-settings i svg { width: 18px; height: 18px; }
             #nth-hub-settings i { width: 22px; height: 22px; border-radius: 5px; }
             #nth-hub-settings i svg { width: 15px; height: 15px; }
-            #nth-hub-settings [data-hub-row] { cursor: pointer; }
+            #nth-hub-settings > div:last-child { display: flex !important; flex-direction: column; align-items: flex-start; gap: 6px; }
+            #nth-hub-settings [data-hub-row] { cursor: pointer; margin: 0 !important; }
             #nth-hub-settings.nth-plain { display: flex; flex-direction: column; gap: 4px; margin: 0 0 12px; }
             #nth-hub-settings.nth-plain > span { font: bold 13px Arial, Helvetica, sans-serif; color: #ccc; }
             #nth-hub-settings.nth-plain button {

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn FF/BS Badges
 // @namespace    https://github.com/tornffbs
-// @version      2.9.0
+// @version      2.9.1
 // @description  FairFight + estimated battle-stat badges next to player names (via FFScouter), live hospital/travel timers, a sort/filter bar on faction and war member lists, and a don't-attack list (war terms, allies, your own faction) with an attack-page warning, with an in-page settings panel. Needs a Torn API key registered with FFScouter. Works on Torn PDA and desktop userscript managers.
 // @author       Nebigoktug
 // @license      MIT
@@ -36,7 +36,7 @@
     /* =======================================================================
      * CONFIG DEFAULTS  — user-overridable ones live in SETTINGS (⚙ panel)
      * ===================================================================== */
-    const VERSION        = '2.9.0';           // keep in sync with @version
+    const VERSION        = '2.9.1';           // keep in sync with @version
     const REPO_URL       = 'https://github.com/nebigoktug/torn-userscripts';
     const LS_KEY         = 'ffbs_api_key';    // where the key is stored locally
     const LS_SETTINGS    = 'ffbs_settings';   // where the ⚙ panel settings live
@@ -1766,7 +1766,8 @@
             #nth-hub-menu i svg, #nth-hub-settings i svg { width: 18px; height: 18px; }
             #nth-hub-settings i { width: 22px; height: 22px; border-radius: 5px; }
             #nth-hub-settings i svg { width: 15px; height: 15px; }
-            #nth-hub-settings [data-hub-row] { cursor: pointer; }
+            #nth-hub-settings > div:last-child { display: flex !important; flex-direction: column; align-items: flex-start; gap: 6px; }
+            #nth-hub-settings [data-hub-row] { cursor: pointer; margin: 0 !important; }
             #nth-hub-settings.nth-plain { display: flex; flex-direction: column; gap: 4px; margin: 0 0 12px; }
             #nth-hub-settings.nth-plain > span { font: bold 13px Arial, Helvetica, sans-serif; color: #ccc; }
             #nth-hub-settings.nth-plain button {
