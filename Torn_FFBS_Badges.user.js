@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn FF/BS Badges
 // @namespace    https://github.com/tornffbs
-// @version      2.8.1
+// @version      2.9.0
 // @description  FairFight + estimated battle-stat badges next to player names (via FFScouter), live hospital/travel timers, a sort/filter bar on faction and war member lists, and a don't-attack list (war terms, allies, your own faction) with an attack-page warning, with an in-page settings panel. Needs a Torn API key registered with FFScouter. Works on Torn PDA and desktop userscript managers.
 // @author       Nebigoktug
 // @license      MIT
@@ -36,7 +36,7 @@
     /* =======================================================================
      * CONFIG DEFAULTS  — user-overridable ones live in SETTINGS (⚙ panel)
      * ===================================================================== */
-    const VERSION        = '2.8.1';           // keep in sync with @version
+    const VERSION        = '2.9.0';           // keep in sync with @version
     const REPO_URL       = 'https://github.com/nebigoktug/torn-userscripts';
     const LS_KEY         = 'ffbs_api_key';    // where the key is stored locally
     const LS_SETTINGS    = 'ffbs_settings';   // where the ⚙ panel settings live
@@ -1526,7 +1526,7 @@
     }
     // Our own UI nodes; mutations that only add these are ignored so badge
     // updates can't trigger a rescan loop.
-    const OWN_NODES = '.ffbs-badge, .ffbs-toolbar, #ffbs-setup, #ffbs-config, [data-nth-hub], #nth-hub-float, #nth-hub-menu, #nth-hub-styles, [data-hub-item], #ffbs-reopen, #ffbs-styles, #ffbs-attack-warn';
+    const OWN_NODES = '.ffbs-badge, .ffbs-toolbar, #ffbs-setup, #ffbs-config, [data-nth-hub], #nth-hub-float, #nth-hub-menu, #nth-hub-styles, #nth-hub2-styles, [data-hub-item], #nth-hub-settings, [data-hub-row], #nth-hub-hint, #ffbs-reopen, #ffbs-styles, #ffbs-attack-warn';
     // Only new player links need a full scan. Torn adds nodes all the time
     // (chat, timers, ads); for those we just make sure the ⚙ button is still
     // there and notice SPA navigation. Scanning on every one of them made
@@ -1719,21 +1719,28 @@
     // button. Called on every scan, so it re-mounts after Torn's SPA
     // re-renders the footer.
     /* =======================================================================
-     * SHARED FOOTER BUTTON  (nth-hub v1 — keep this block identical in every
-     * script). All of these scripts share one button in Torn's footer row.
-     * With one script installed it opens that script straight away; with
-     * more it opens a small menu. The page DOM is the only shared state, so
-     * it also works when the script manager sandboxes each script.
+     * SHARED SCRIPT BUTTON  (nth-hub v2 — keep this block identical in every
+     * script). All of these scripts share one entry point. When Torn's chat
+     * Settings button (⚙) is there, they are listed in a "Scripts" section at
+     * the top of Torn's chat Settings panel and our footer button is hidden,
+     * so the footer gets no extra button. Without Torn's ⚙ (Torn changed it,
+     * or Chat Panel hides it) the shared footer button comes back: with one
+     * script installed it opens that script straight away; with more it opens
+     * a small menu. The page DOM is the only shared state, so it also works
+     * when the script manager sandboxes each script, and v1 copies still
+     * installed are listed and tucked away too.
      * ===================================================================== */
     const HUB_GRID_SVG = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24">' +
         '<g fill="#fff"><rect x="3" y="3" width="7.5" height="7.5" rx="1.5"/><rect x="13.5" y="3" width="7.5" height="7.5" rx="1.5"/>' +
         '<rect x="3" y="13.5" width="7.5" height="7.5" rx="1.5"/><rect x="13.5" y="13.5" width="7.5" height="7.5" rx="1.5"/></g></svg>';
     const HUB_MANY_BG = 'linear-gradient(to bottom, #6b6b6b, #3a3a3a)';
+    const HUB_HINT_KEY = 'nth_hub_hint_seen';
     function hubStyles() {
-        if (document.getElementById('nth-hub-styles')) return;
+        if (document.getElementById('nth-hub2-styles')) return;
         const st = document.createElement('style');
-        st.id = 'nth-hub-styles';
+        st.id = 'nth-hub2-styles';
         st.textContent = `
+            html.nth-hub-tucked [data-nth-hub] { display: none !important; }
             #nth-hub-float {
                 position: fixed; right: 12px; bottom: 110px; z-index: 2147483646; width: 38px; height: 38px;
                 border-radius: 50%; border: 1px solid rgba(255,255,255,.25); padding: 0; cursor: pointer;
@@ -1752,11 +1759,25 @@
                 text-align: left; cursor: pointer;
             }
             #nth-hub-menu button:hover, #nth-hub-menu button:active { background: #333; }
-            #nth-hub-menu i {
+            #nth-hub-menu i, #nth-hub-settings i {
                 display: flex; align-items: center; justify-content: center; flex: none;
                 width: 28px; height: 28px; border-radius: 6px;
             }
-            #nth-hub-menu i svg { width: 18px; height: 18px; }
+            #nth-hub-menu i svg, #nth-hub-settings i svg { width: 18px; height: 18px; }
+            #nth-hub-settings i { width: 22px; height: 22px; border-radius: 5px; }
+            #nth-hub-settings i svg { width: 15px; height: 15px; }
+            #nth-hub-settings [data-hub-row] { cursor: pointer; }
+            #nth-hub-settings.nth-plain { display: flex; flex-direction: column; gap: 4px; margin: 0 0 12px; }
+            #nth-hub-settings.nth-plain > span { font: bold 13px Arial, Helvetica, sans-serif; color: #ccc; }
+            #nth-hub-settings.nth-plain button {
+                display: flex; align-items: center; gap: 10px; padding: 6px 8px; background: #2a2a2a;
+                border: 1px solid #444; border-radius: 6px; color: #eee; font: 13px Arial, Helvetica, sans-serif; text-align: left;
+            }
+            #nth-hub-hint {
+                position: fixed; z-index: 2147483646; max-width: 220px; padding: 8px 10px; background: #1f1f1f; color: #eee;
+                border: 1px solid #2ecc40; border-radius: 8px; box-shadow: 0 6px 20px rgba(0,0,0,.45);
+                font: 12px/1.35 Arial, Helvetica, sans-serif; cursor: pointer;
+            }
         `;
         (document.head || document.documentElement).appendChild(st);
     }
@@ -1797,6 +1818,139 @@
         if (svg && cls && hub.id !== 'nth-hub-float') svg.setAttribute('class', cls);
         hub.style.setProperty('background', one ? one.getAttribute('data-hub-bg') : HUB_MANY_BG, 'important');
     }
+    // Torn's chat ⚙ button, only while it is actually shown.
+    function hubTornGear() {
+        const g = document.getElementById('notes_settings_button');
+        return g && g.getClientRects().length ? g : null;
+    }
+    // Torn class names are hashed (root___Z_Afv), so they are copied from
+    // Torn's own "Utilities" section rather than hard-coded.
+    function hubSettingsSection(content) {
+        const sec = document.createElement('div');
+        sec.id = 'nth-hub-settings';
+        const model = Array.from(content.children).find((c) => c.id !== 'nth-hub-settings' && c.querySelector('button span'));
+        const head = model && model.querySelector(':scope > span');
+        const list = model && model.querySelector(':scope > div');
+        const btn = list && list.querySelector('button');
+        const iconW = btn && btn.querySelector('[class*="iconWrapper"]');
+        const title = btn && btn.querySelector('span');
+        const tpl = { list: 'div', btn: '', icon: '', divider: '', title: '' };
+        if (model && head && list && btn && iconW && title) {
+            sec.className = model.className;
+            tpl.list = list.className;
+            tpl.btn = btn.className;
+            tpl.icon = iconW.className;
+            const div = btn.querySelector('[class*="divider"]');
+            tpl.divider = div ? div.className : '';
+            tpl.title = title.className;
+            const h = document.createElement('span');
+            h.className = head.className;
+            h.textContent = 'Scripts';
+            sec.appendChild(h);
+        } else {
+            sec.className = 'nth-plain';
+            const h = document.createElement('span');
+            h.textContent = 'Scripts';
+            sec.appendChild(h);
+        }
+        const rows = document.createElement('div');
+        if (tpl.list !== 'div') rows.className = tpl.list;
+        sec.appendChild(rows);
+        sec._nthTpl = tpl;
+        return sec;
+    }
+    function hubFillSection(sec) {
+        const items = Array.from(hubMenu().querySelectorAll('[data-hub-item]'));
+        const sig = items.map((b) => b.getAttribute('data-hub-item')).join(',');
+        if (sec.getAttribute('data-hub-sig') === sig) return;
+        sec.setAttribute('data-hub-sig', sig);
+        const tpl = sec._nthTpl || {};
+        const rows = sec.lastElementChild;
+        rows.textContent = '';
+        items.forEach((item) => {
+            const b = document.createElement('button');
+            b.type = 'button';
+            b.setAttribute('data-hub-row', item.getAttribute('data-hub-item'));
+            if (tpl.btn) b.className = tpl.btn;
+            const w = document.createElement('div');
+            if (tpl.icon) w.className = tpl.icon;
+            const i = document.createElement('i');
+            i.innerHTML = item.querySelector('i').innerHTML;
+            i.style.background = item.getAttribute('data-hub-bg');
+            w.appendChild(i);
+            b.appendChild(w);
+            if (tpl.divider) { const d = document.createElement('div'); d.className = tpl.divider; b.appendChild(d); }
+            const t = document.createElement('span');
+            if (tpl.title) t.className = tpl.title;
+            t.textContent = item.textContent;
+            b.appendChild(t);
+            b.addEventListener('click', (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                // Close Torn's Settings panel, then open the script.
+                const g = document.getElementById('notes_settings_button');
+                if (g && /opened/.test(g.className)) g.click();
+                const it = hubMenu().querySelector(`[data-hub-item="${b.getAttribute('data-hub-row')}"]`);
+                if (it) it.click();
+            });
+            rows.appendChild(b);
+        });
+    }
+    function hubHint(gear) {
+        try { if (localStorage.getItem(HUB_HINT_KEY)) return; localStorage.setItem(HUB_HINT_KEY, '1'); } catch (e) { return; }
+        if (document.getElementById('nth-hub-hint')) return;
+        const tip = document.createElement('div');
+        tip.id = 'nth-hub-hint';
+        tip.textContent = 'Script settings have moved: tap Torn\'s chat ⚙ and look under "Scripts".';
+        const r = gear.getBoundingClientRect();
+        tip.style.right = Math.max(8, window.innerWidth - r.right) + 'px';
+        tip.style.bottom = Math.max(8, window.innerHeight - r.top + 8) + 'px';
+        const close = () => tip.remove();
+        tip.addEventListener('click', close);
+        setTimeout(close, 10000);
+        document.body.appendChild(tip);
+    }
+    // Keeps the footer button and the Settings section in step with the page.
+    // Writes to the DOM only when something changed, so observers settle.
+    function hubSync() {
+        if (!document.body) return;
+        const gear = hubTornGear();
+        const root = document.documentElement;
+        if (!!gear !== root.classList.contains('nth-hub-tucked')) {
+            root.classList.toggle('nth-hub-tucked', !!gear);
+            if (gear) hubHint(gear);
+        }
+        const content = document.querySelector('#settings_panel [class*="content___"]');
+        if (!content) return;
+        let sec = document.getElementById('nth-hub-settings');
+        if (sec && sec.parentNode !== content) { sec.remove(); sec = null; }
+        if (!sec) {
+            sec = hubSettingsSection(content);
+            content.insertBefore(sec, content.firstChild);
+        }
+        hubFillSection(sec);
+    }
+    // One watcher per page, whichever script gets here first.
+    function hubWatch() {
+        const root = document.documentElement;
+        if (root.hasAttribute('data-nth-hub-watch')) return;
+        root.setAttribute('data-nth-hub-watch', '2');
+        let queued = false;
+        const kick = () => {
+            if (queued) return;
+            queued = true;
+            requestAnimationFrame(() => { queued = false; hubSync(); });
+        };
+        // Chat Panel hides Torn's ⚙ through a class on <html>.
+        new MutationObserver(kick).observe(root, { attributes: true, attributeFilter: ['class'] });
+        let tries = 0;
+        const findChat = () => {
+            const chat = document.getElementById('chatRoot');
+            if (chat) { new MutationObserver(kick).observe(chat, { childList: true, subtree: true }); kick(); return; }
+            if (++tries < 60) setTimeout(findChat, 1000);
+        };
+        findChat();
+    }
     // item: { id, label, svg (markup), bg (CSS background), onOpen }
     function hubMount(item) {
         if (!document.body) return;
@@ -1818,10 +1972,11 @@
             });
             menu.appendChild(b);
         }
+        hubWatch();
         const ref = document.getElementById('notes_panel_button') || document.getElementById('people_panel_button');
         let hub = document.querySelector('[data-nth-hub]');
         const inBar = !!(ref && ref.parentNode);
-        if (hub && (inBar ? hub.parentNode === ref.parentNode : hub.id === 'nth-hub-float')) { hubPaint(hub, ref); return; }
+        if (hub && (inBar ? hub.parentNode === ref.parentNode : hub.id === 'nth-hub-float')) { hubPaint(hub, ref); hubSync(); return; }
         if (hub) hub.remove();
         hub = document.createElement('button');
         hub.type = 'button';
@@ -1837,6 +1992,7 @@
             document.body.appendChild(hub);
         }
         hubPaint(hub, ref);
+        hubSync();
     }
     function showGearButton() {
         hubMount({ id: 'ffbs', label: 'FF/BS Badges', svg: GEAR_SVG,

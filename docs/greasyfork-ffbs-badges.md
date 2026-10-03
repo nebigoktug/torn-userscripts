@@ -16,7 +16,7 @@ Works on **Torn PDA** and desktop userscript managers (Tampermonkey, Violentmonk
   - Protected players get a ✋ badge, listed ones a red row, they sink to the bottom of sorted lists, and their attack page shows a red warning banner.
   - Warnings only; nothing is blocked.
 - **Teammates hidden**: no FF/BS badges on your own faction members, which also saves lookups. This can be turned off.
-- **Settings**, from the scripts button in Torn's chat bar (one shared button for all of these scripts):
+- **Settings**, under "Scripts" in Torn's chat Settings (⚙), so the script adds no extra button to the chat bar (if Torn's ⚙ isn't there, one shared scripts button appears instead):
   - Badge style (Classic / Solid dark / Bright), size and position
   - Colour thresholds, with a live preview
   - Light / dark theme, following Torn automatically
