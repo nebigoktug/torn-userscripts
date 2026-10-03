@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Graffiti Helper
 // @namespace    https://greasyfork.org/users/nebigoktug
-// @version      1.2.1
+// @version      1.2.2
 // @description  Adds rep progress, colour suggestions and crew/CS100 targets directly into Torn's graffiti page. Read-only, no automation.
 // @author       NebiGoktug
 // @license      MIT
@@ -43,6 +43,11 @@
      Torn PDA injecting on any URL that merely contains "torn". */
   if (!/^(www\.)?torn\.com$/i.test(location.hostname) ||
       !/\/page\.php$/i.test(location.pathname) || !/sid=crimes/i.test(location.search)) return;
+  /* Torn PDA can inject the script again on in-page navigation. Each copy
+     would add its own whole-page observer, and the page slows down the longer
+     PDA stays open. Run once. */
+  if (window.__tghRunning) return;
+  window.__tghRunning = true;
 
   const STORE_KEY = 'nb_graffiti_v2';
   const NERVE_PER_ATTEMPT = 3;
@@ -262,7 +267,9 @@
     }
 
     const wanted = hint[mode];
-    const stock = stats.cans?.[wanted] ?? 0;
+    // null = not known yet (the stats carousel hasn't been seen open), which is
+    // not the same as having none.
+    const stock = stats.cans ? (stats.cans[wanted] ?? 0) : null;
 
     if (card.colour === wanted) {
       setBadge(starsEl, 'gh-colour good', '\u2713',
@@ -273,7 +280,8 @@
         `${wanted} suggested for ${mode}, but you have none`);
     } else {
       setBadge(starsEl, 'gh-colour suggest', `\u2192${wanted}`,
-        `Emforus suggests ${wanted} for ${mode} here (low confidence). You have ${stock}.`);
+        `Emforus suggests ${wanted} for ${mode} here (low confidence).` +
+        (stock == null ? ' Open the stats panel once to see your stock.' : ` You have ${stock}.`));
     }
   };
 
@@ -437,6 +445,9 @@
      filtered out as "nothing foreign happened". */
   const scheduleRender = (mutations) => {
     if (writing || queued) return;
+    // Torn's timers change text every second all over the page: ignore them in
+    // a background tab, and on other crimes once nothing of ours is left.
+    if (mutations && (document.hidden || (!onGraffitiPage() && !document.querySelector('.gh-strip')))) return;
     if (mutations && !hasForeignMutation(mutations)) return;
 
     queued = true;
@@ -456,10 +467,11 @@
       childList: true, subtree: true, characterData: true,
     });
 
-    let lastHash = location.hash;
-    setInterval(() => {
-      if (location.hash !== lastHash) { lastHash = location.hash; scheduleRender(null); }
-    }, 800);
+    // Moving between crimes only changes the hash: listen instead of polling.
+    window.addEventListener('hashchange', () => scheduleRender(null));
+    window.addEventListener('popstate', () => scheduleRender(null));
+    // Catch up after the tab was in the background.
+    document.addEventListener('visibilitychange', () => { if (!document.hidden) scheduleRender(null); });
   };
 
   start();
