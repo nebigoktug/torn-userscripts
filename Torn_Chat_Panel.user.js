@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Chat Panel
 // @namespace    https://github.com/nebigoktug
-// @version      1.1.7
+// @version      1.2.0
 // @description  A full-screen messenger-style view of Torn's Chat 3.1: one list of all your chats with last message, time, unread count and online dot, and a bubble view per chat. Torn's own chat does the work underneath: messages are read from what Torn already loads, and sending types into Torn's own message box.
 // @author       Nebigoktug
 // @license      MIT
@@ -51,7 +51,7 @@
     if (window.__twcRunning) return;
     window.__twcRunning = true;
 
-    const VERSION  = '1.1.7';
+    const VERSION  = '1.2.0';
     const REPO_URL = 'https://github.com/nebigoktug/torn-userscripts';
     const LS_CONVS = 'twc_convs';      // chat list (names, last message) for a quick start
     const LS_ME    = 'twc_me';
@@ -1057,12 +1057,16 @@
         if (!hide && chat) chat.querySelectorAll('[data-twc-hidden]').forEach((el) => el.removeAttribute('data-twc-hidden'));
         const anchor = document.getElementById('people_panel_button') || document.getElementById('twc-btn');
         if (!chat || !anchor || !chat.contains(anchor)) return;
+        // Torn's chat Settings panel (opened by Torn's ⚙, which stays in the
+        // bar) is left visible: only what is next to it is hidden.
+        const mark = (el) => {
+            const keep = el.id === 'settings_panel' || !!el.querySelector('#settings_panel');
+            if (hide && !keep) { if (!el.hasAttribute('data-twc-hidden')) el.setAttribute('data-twc-hidden', ''); return; }
+            if (el.hasAttribute('data-twc-hidden')) el.removeAttribute('data-twc-hidden');
+            if (hide && el.id !== 'settings_panel') Array.from(el.children).forEach(mark);
+        };
         for (let el = anchor.parentNode; el && el !== chat; el = el.parentNode) {
-            Array.from(el.parentNode.children).forEach((sib) => {
-                if (sib === el) return;
-                if (hide) { if (!sib.hasAttribute('data-twc-hidden')) sib.setAttribute('data-twc-hidden', ''); }
-                else sib.removeAttribute('data-twc-hidden');
-            });
+            Array.from(el.parentNode.children).forEach((sib) => { if (sib !== el) mark(sib); });
         }
     }
     // Torn windows the panel opened; closed again when the panel closes.
@@ -1197,7 +1201,7 @@
             ${row('Enter sends the message', chk('enterSends'))}
             ${row('Patterned background', chk('wallpaper'))}
             ${row('FF / BS next to names <small>(from FF/BS Badges, no extra requests)</small>', chk('ffbs'))}
-            ${row('Hide Torn\'s own chat <small>(it keeps running underneath; turn off to reach Torn\'s chat settings)</small>', chk('hideTorn'))}
+            ${row('Hide Torn\'s own chat <small>(it keeps running underneath; Torn\'s ⚙ chat settings stay in the bar)</small>', chk('hideTorn'))}
             ${row('Close the Torn chat windows the panel opened, when it closes', chk('closeTornWins'))}
             ${row('Mute chat sounds <small>(only sounds that come from Torn\'s chat)</small>', chk('muteSound'))}
             ${row('Image previews <small>(loading an image shows its host your IP; "trusted" = imgur, Discord, Tenor, Giphy, Torn…)</small>',
@@ -1280,12 +1284,14 @@
             html.twc-hide-torn [data-twc-hidden], html.twc-hide-torn [data-twc-hidden] * { pointer-events: none !important; }
             /* The same by structure, so it already applies while Torn first draws its chat on
                each page (the attributes above only come a moment later). Torn's chat root holds
-               the windows area and the button bar; everything but the bar is hidden. */
-            html.twc-hide-torn #chatRoot > div > div:not(:has(#people_panel_button, #twc-btn, #notes_settings_button, [data-nth-hub])) { opacity: 0 !important; }
-            html.twc-hide-torn #chatRoot > div > div:not(:has(#people_panel_button, #twc-btn, #notes_settings_button, [data-nth-hub])),
-            html.twc-hide-torn #chatRoot > div > div:not(:has(#people_panel_button, #twc-btn, #notes_settings_button, [data-nth-hub])) * { pointer-events: none !important; }
-            html.twc-hide-torn #chatRoot [id^="chat_panel_button:"], html.twc-hide-torn #people_panel_button,
-            html.twc-hide-torn #notes_settings_button { display: none !important; }`;
+               the windows area and the button bar; everything but the bar is hidden, except
+               Torn's chat Settings panel, opened by Torn's ⚙ that stays in the bar. */
+            html.twc-hide-torn #chatRoot > div > div:not(:has(#people_panel_button, #twc-btn, #notes_settings_button, [data-nth-hub])) { pointer-events: none !important; }
+            html.twc-hide-torn #chatRoot > div > div:not(:has(#people_panel_button, #twc-btn, #notes_settings_button, [data-nth-hub])) > :not(#settings_panel):not(:has(#settings_panel)) { opacity: 0 !important; }
+            html.twc-hide-torn #chatRoot > div > div:not(:has(#people_panel_button, #twc-btn, #notes_settings_button, [data-nth-hub])) > :not(#settings_panel):not(:has(#settings_panel)),
+            html.twc-hide-torn #chatRoot > div > div:not(:has(#people_panel_button, #twc-btn, #notes_settings_button, [data-nth-hub])) > :not(#settings_panel):not(:has(#settings_panel)) * { pointer-events: none !important; }
+            html.twc-hide-torn #settings_panel { pointer-events: auto !important; }
+            html.twc-hide-torn #chatRoot [id^="chat_panel_button:"], html.twc-hide-torn #people_panel_button { display: none !important; }`;
         (document.head || document.documentElement).appendChild(st);
     }
     function sortedConvs() {

@@ -16,7 +16,7 @@ Torn's own chat keeps doing the work underneath. The panel reads the messages To
 
 ## How it uses Torn's chat
 
-- Torn's chat windows are **hidden but keep running** underneath the panel. Its chat button is replaced by the panel's green one. You can turn the hiding off in the settings, for example to reach Torn's own chat settings.
+- Torn's chat windows are **hidden but keep running** underneath the panel. Its chat button is replaced by the panel's green one. Torn's own ⚙ chat settings button stays in the bar. You can turn the hiding off in the settings.
 - Opening a chat in the panel taps that chat's button in Torn's chat bar. Scrolling up scrolls Torn's window so Torn loads older messages. **Send** puts your text into Torn's message box and taps Torn's send button.
 - **Failsafe**: if Torn changes its chat and the panel can't find the chat bar, gets no data, or can't open chat windows, it shows Torn's own chat again and says why.
 
