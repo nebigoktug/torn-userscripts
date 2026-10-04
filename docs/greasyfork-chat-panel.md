@@ -8,6 +8,7 @@ Torn's own chat keeps doing the work underneath. The panel reads the messages To
 - **Bubble conversations**: messages from the same person are grouped, with avatars and coloured names in group chats. Links are clickable, emoji-only messages are shown larger, and @mentions of you are highlighted.
 - **Unread messages**: a divider marks where the unread part starts, and a `↑ N` button jumps straight to it and marks them all read. Read chats stay read after a page reload.
 - **Emoji picker**: recent emojis, the ones most used in your own chats, a Torn set (💰🌸🧸✈️💊🔫…) and the usual categories.
+- **New chats**: Torn's own **Start chat** button on a player's profile opens the panel on that chat. Torn's search suggestions get a 💬 next to each player: it opens their profile and taps Start chat for you.
 - **Long-press menus**: on a message: reply (@name), copy, open link, open profile, message privately. On a chat: pin to top, mute.
 - **Phone-friendly**: the Back button moves between chat and list, the message box stays above the keyboard, and the unread total sits on the chat button.
 - **FF / BS chips** next to names, if you also use [Torn FF/BS Badges](https://greasyfork.org/en/scripts/597816-torn-ff-bs-badges). They are read from its local cache, with no extra requests.

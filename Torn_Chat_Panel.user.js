@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Chat Panel
 // @namespace    https://github.com/nebigoktug
-// @version      1.2.1
+// @version      1.3.0
 // @description  A full-screen messenger-style view of Torn's Chat 3.1: one list of all your chats with last message, time, unread count and online dot, and a bubble view per chat. Torn's own chat does the work underneath: messages are read from what Torn already loads, and sending types into Torn's own message box.
 // @author       Nebigoktug
 // @license      MIT
@@ -38,6 +38,11 @@
  * puts your text into Torn's message box and taps Torn's send button. Every
  * one of these happens only because you tapped or scrolled.
  *
+ * New chats: Torn's own "Start chat" button on a profile (or mini profile)
+ * opens the panel on that chat. Torn's search suggestions get a 💬 per
+ * player: it opens the player's profile and taps Torn's "Start chat" there
+ * once, because you tapped the 💬.
+ *
  * Torn's own chat is hidden (a setting) but keeps running underneath; the
  * panel has its own button in the chat bar, with the unread total on it.
  *
@@ -51,7 +56,7 @@
     if (window.__twcRunning) return;
     window.__twcRunning = true;
 
-    const VERSION  = '1.2.1';
+    const VERSION  = '1.3.0';
     const REPO_URL = 'https://github.com/nebigoktug/torn-userscripts';
     const LS_CONVS = 'twc_convs';      // chat list (names, last message) for a quick start
     const LS_ME    = 'twc_me';
@@ -1600,6 +1605,76 @@
     // ------------------------------------------------------------ entry button
     const CHAT_SVG = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24"%CLS%>' +
         '<path fill="#fff" d="M12 3C7 3 3 6.6 3 11c0 2.2 1 4.2 2.7 5.6L5 21l4.2-2.2c.9.2 1.8.3 2.8.3 5 0 9-3.6 9-8s-4-8-9-8z"/></svg>';
+    // ------------------------------------------------------------ new chats from Torn's pages
+    // Torn's own "Start chat" button (profile and mini profile) opens a private
+    // window in Torn's chat, which the panel keeps hidden: the panel opens on
+    // that chat instead. Torn's search suggestions get a 💬 that goes to the
+    // player's profile with #twc-chat, where Torn's "Start chat" is tapped
+    // once for you (that tap is the 💬 you made).
+    const START_SEL = '.profile-button-initiateChat';
+    async function startChatFromTorn(uid, name) {
+        const key = dmKey(uid);
+        const c = conv(key, { type: 'dm', id: String(uid) });
+        if (!c.name && name) c.name = name;
+        saveConvs();
+        const win = await waitFor(() => tornWindow(c), 5000);
+        if (win) { openedWins.add(String(uid)); applyHideTorn(); }
+        // With Torn's chat shown, Torn's own window is what you see.
+        if (!hidingTorn()) return;
+        openPanel();
+        openConv(key);
+    }
+    function profileName(uid) {
+        const m = /^(.+?)'s Profile/.exec(document.title);
+        return m && new RegExp('[?&]XID=' + uid + '(\\D|$)').test(location.search) ? m[1] : '';
+    }
+    function onStartChatClick(e) {
+        const b = e.target && e.target.closest && e.target.closest(START_SEL);
+        if (!b) return;
+        const m = /profile-(\d+)/.exec(b.id || '') || /[?&]XID=(\d+)/.exec(location.search);
+        if (m) startChatFromTorn(m[1], profileName(m[1]));
+    }
+    // 💬 next to each player in Torn's search suggestions.
+    function addSearchChat() {
+        document.querySelectorAll('#userword-listbox a[id^="userword-option-"]').forEach((a) => {
+            if (a.querySelector('.twc-schat')) return;
+            const uid = a.id.replace('userword-option-', '');
+            if (!/^\d+$/.test(uid)) return;
+            const b = document.createElement('span');
+            b.className = 'twc-schat';
+            b.setAttribute('role', 'button');
+            b.title = 'Start chat';
+            b.textContent = '💬';
+            b.addEventListener('click', (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                location.href = `https://www.torn.com/profiles.php?XID=${uid}#twc-chat`;
+            }, true);
+            a.appendChild(b);
+        });
+    }
+    async function startChatFromHash() {
+        if (location.hash !== '#twc-chat' || !/\/profiles\.php/.test(location.pathname)) return;
+        history.replaceState(history.state, '', location.pathname + location.search);
+        const b = await waitFor(() => document.querySelector(START_SEL), 10000);
+        if (b) b.click();
+    }
+    function hookStartChat() {
+        document.addEventListener('click', onStartChatClick, true);
+        const st = document.createElement('style');
+        st.textContent = `#userword-listbox a[id^="userword-option-"] { display: flex; align-items: center; }
+            .twc-schat { margin-left: auto; padding: 0 8px; font-size: 16px; line-height: 24px; cursor: pointer; flex: none; }`;
+        (document.head || document.documentElement).appendChild(st);
+        let queued = false;
+        new MutationObserver(() => {
+            if (queued || !document.getElementById('userword-listbox')) return;
+            queued = true;
+            requestAnimationFrame(() => { queued = false; addSearchChat(); });
+        }).observe(document.getElementById('header-root') || document.body, { childList: true, subtree: true });
+        addSearchChat();
+        startChatFromHash();
+    }
+
     // Our own button in Torn's chat bar (not in the shared script menu), where
     // Torn's chat buttons were. Without a chat bar it floats bottom-right.
     function mountButton() {
@@ -1636,6 +1711,7 @@
     function start() {
         if (!document.body) return setTimeout(start, 200);
         mountButton();
+        hookStartChat();
         readBootstrap();
         let pending = false;
         new MutationObserver(() => {
