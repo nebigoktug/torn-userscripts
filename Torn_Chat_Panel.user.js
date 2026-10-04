@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Chat Panel
 // @namespace    https://github.com/nebigoktug
-// @version      1.2.0
+// @version      1.2.1
 // @description  A full-screen messenger-style view of Torn's Chat 3.1: one list of all your chats with last message, time, unread count and online dot, and a bubble view per chat. Torn's own chat does the work underneath: messages are read from what Torn already loads, and sending types into Torn's own message box.
 // @author       Nebigoktug
 // @license      MIT
@@ -51,7 +51,7 @@
     if (window.__twcRunning) return;
     window.__twcRunning = true;
 
-    const VERSION  = '1.2.0';
+    const VERSION  = '1.2.1';
     const REPO_URL = 'https://github.com/nebigoktug/torn-userscripts';
     const LS_CONVS = 'twc_convs';      // chat list (names, last message) for a quick start
     const LS_ME    = 'twc_me';
@@ -1235,8 +1235,9 @@
         renderList();
     }
 
-    // Torn's server stops counting unread messages at 99, so 99 means "99 or more".
-    const countText = (n) => (Number(n) >= 99 ? '99+' : String(n));
+    // Torn's unread counts go past 99, so the real number is shown (999+ only
+    // to keep the badges narrow).
+    const countText = (n) => (Number(n) > 999 ? '999+' : String(n));
 
     let renderQueued = false;
     function renderSoon() {
