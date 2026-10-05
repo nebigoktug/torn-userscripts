@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Chat Panel
 // @namespace    https://github.com/nebigoktug
-// @version      1.3.0
+// @version      1.3.1
 // @description  A full-screen messenger-style view of Torn's Chat 3.1: one list of all your chats with last message, time, unread count and online dot, and a bubble view per chat. Torn's own chat does the work underneath: messages are read from what Torn already loads, and sending types into Torn's own message box.
 // @author       Nebigoktug
 // @license      MIT
@@ -56,7 +56,7 @@
     if (window.__twcRunning) return;
     window.__twcRunning = true;
 
-    const VERSION  = '1.3.0';
+    const VERSION  = '1.3.1';
     const REPO_URL = 'https://github.com/nebigoktug/torn-userscripts';
     const LS_CONVS = 'twc_convs';      // chat list (names, last message) for a quick start
     const LS_ME    = 'twc_me';
@@ -1411,7 +1411,27 @@
         c.unread = 0;
         // ↑ N: jump to the first unread message, and (like the ✕ on Torn's own pill)
         // count them all as read right away; the divider stays as a marker.
-        conv.querySelector('.twc-jumpgo').addEventListener('click', () => {
+        // When fewer messages are loaded than are unread, older pages are loaded
+        // first (Torn's window scrolled up, page by page) until the first unread
+        // one is in, so ↑ N goes up exactly N messages.
+        let jumping = false;
+        conv.querySelector('.twc-jumpgo').addEventListener('click', async () => {
+            if (jumping) return;
+            jumping = true;
+            const label = conv.querySelector('.twc-jumpgo span');
+            for (let tries = 0; tries < 40; tries++) {
+                const b = box(key);
+                if (currentKey !== key || !unreadMark || unreadMark.key !== key || !unreadMark.partial || !b.hasOlder) break;
+                label.textContent = '…';
+                const before = b.list.length;
+                loadOlder();
+                await waitFor(() => !olderPending || currentKey !== key, 4500);
+                if (currentKey !== key || box(key).list.length === before) break;
+                unreadMark.id = null;   // place the divider again with the older messages in
+                renderMessages(true);
+            }
+            jumping = false;
+            if (currentKey !== key) return;
             const div = box_.querySelector('.twc-unread');
             if (div) div.scrollIntoView({ behavior: 'smooth', block: 'start' });
             unreadMark.seen = true;
