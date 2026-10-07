@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn - Poker Sidearm TR
 // @namespace    https://greasyfork.org/users/nebigoktug
-// @version      1.0.0
+// @version      1.0.1
 // @description  Poker Sidearm 8.7.1’in Türkçe sürümü: Torn poker masasında FOLD / CALL / RAISE önerisi ve Türkçe açıklamalar. Buton adları Torn’daki gibi İngilizce.
 // @author       S7upidity (orijinal), NebiGoktug (Türkçe çeviri)
 // @license      MIT
@@ -29,7 +29,7 @@
     // PDA script’i sayfa içi geçişlerde yeniden yükleyebilir; ikinci kopya çalışmasın.
     if (window.__tpsTrRunning) return;
     window.__tpsTrRunning = true;
-    const TR_VERSION = '1.0.0';
+    const TR_VERSION = '1.0.1';
 
     const SETTINGS_KEY = 'tornPokerSidearm_settings';
     const HISTORY_KEY = 'tornPokerSidearm_history';
@@ -9814,11 +9814,59 @@
         document.head.appendChild(s);
     }
 
+    // TR 1.0.1: 8.8.1’den alındı. Kayıtlı konum ekran dışındaysa buton görünmüyordu.
+    function viewportSafePosition(el, pos, margin = 6) {
+        if (!el || !pos) return null;
+        const vw = Math.max(1, Number(window.innerWidth || document.documentElement?.clientWidth || 1));
+        const vh = Math.max(1, Number(window.innerHeight || document.documentElement?.clientHeight || 1));
+        let width = Number(el.offsetWidth || 0);
+        let height = Number(el.offsetHeight || 0);
+        if (!(width > 0)) width = el.id === 'tps-bubble' ? bubbleSizePx() : Math.min(420, Math.max(80, vw - margin * 2));
+        if (!(height > 0)) height = el.id === 'tps-bubble' ? bubbleSizePx() : 80;
+        const maxX = Math.max(margin, vw - width - margin);
+        const maxY = Math.max(margin, vh - height - margin);
+        const rawX = Number(pos.x);
+        const rawY = Number(pos.y);
+        return {
+            x: Math.round(clamp(Number.isFinite(rawX) ? rawX : margin, margin, maxX)),
+            y: Math.round(clamp(Number.isFinite(rawY) ? rawY : margin, margin, maxY))
+        };
+    }
+
     function applyPos(el, pos) {
         if (!pos) return;
-        el.style.left = pos.x + 'px';
-        el.style.top = pos.y + 'px';
+        const safe = viewportSafePosition(el, pos) || pos;
+        el.style.left = safe.x + 'px';
+        el.style.top = safe.y + 'px';
         el.style.right = 'auto';
+        el.style.bottom = 'auto';
+    }
+
+    function keepBubbleOnScreen({ persist = true } = {}) {
+        const btn = document.getElementById('tps-bubble');
+        if (!btn) return false;
+        const r = btn.getBoundingClientRect();
+        const fallback = settings.bubblePosition || { x: r.left, y: r.top };
+        const safe = viewportSafePosition(btn, fallback, 6);
+        if (!safe) return false;
+        const moved = Math.abs(Number(r.left || 0) - safe.x) > 1 || Math.abs(Number(r.top || 0) - safe.y) > 1 ||
+            r.right < 0 || r.bottom < 0 || r.left > window.innerWidth || r.top > window.innerHeight;
+        if (moved || settings.bubblePosition) {
+            btn.style.left = safe.x + 'px';
+            btn.style.top = safe.y + 'px';
+            btn.style.right = 'auto';
+            btn.style.bottom = 'auto';
+        }
+        if (persist && settings.bubblePosition && (settings.bubblePosition.x !== safe.x || settings.bubblePosition.y !== safe.y)) {
+            settings.bubblePosition = { x: safe.x, y: safe.y };
+            saveSettings(settings);
+        }
+        return moved;
+    }
+
+    // TR 1.0.1: Torn sayfayı yeniden çizip butonu silerse geri ekle.
+    function ensureBubbleVisible() {
+        try { ensureBubble(); keepBubbleOnScreen({ persist: true }); } catch (_) {}
     }
 
     function bubbleSizePx() {
@@ -11142,6 +11190,11 @@ function buildVerdictHtml(ctx) {
     function init() {
         injectStyles();
         ensureBubble();
+        ensureBubbleVisible();
+        requestAnimationFrame(ensureBubbleVisible);
+        setTimeout(ensureBubbleVisible, 250);
+        window.addEventListener('resize', ensureBubbleVisible, { passive: true });
+        window.addEventListener('pageshow', () => setTimeout(ensureBubbleVisible, 0));
         try { syncRenderedTableTexture(); } catch (_) {}
         try { initialiseDepartedSnapshot(); } catch (_) {}
         if (debug === 1) {
@@ -11177,12 +11230,14 @@ function buildVerdictHtml(ctx) {
         document.addEventListener('visibilitychange', () => {
             if (!document.hidden) {
                 _equityCache = { key: '', value: null, at: 0 };
+                ensureBubbleVisible();
                 runLiveRefreshCycle();
             }
         });
 
         setInterval(() => {
             if (document.hidden) return;
+            ensureBubbleVisible();
             runLiveRefreshCycle();
             const histList = document.querySelector('#tps-history-list');
             if (histList && document.getElementById('tps-panel')) {
