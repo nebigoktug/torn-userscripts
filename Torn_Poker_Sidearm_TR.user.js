@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn - Poker Sidearm TR
 // @namespace    https://greasyfork.org/users/nebigoktug
-// @version      1.0.1
+// @version      1.0.2
 // @description  Poker Sidearm 8.7.1’in Türkçe sürümü: Torn poker masasında FOLD / CALL / RAISE önerisi ve Türkçe açıklamalar. Buton adları Torn’daki gibi İngilizce.
 // @author       S7upidity (orijinal), NebiGoktug (Türkçe çeviri)
 // @license      MIT
@@ -29,7 +29,7 @@
     // PDA script’i sayfa içi geçişlerde yeniden yükleyebilir; ikinci kopya çalışmasın.
     if (window.__tpsTrRunning) return;
     window.__tpsTrRunning = true;
-    const TR_VERSION = '1.0.1';
+    const TR_VERSION = '1.0.2';
 
     const SETTINGS_KEY = 'tornPokerSidearm_settings';
     const HISTORY_KEY = 'tornPokerSidearm_history';
@@ -11255,14 +11255,33 @@ function buildVerdictHtml(ctx) {
         }, SAFETY_REFRESH_MS);
     }
 
+    // TR 1.0.2: PDA’da konsol görünmediği için durum ve hatalar ekranda gösterilir.
+    function trNotice(text, isError) {
+        try {
+            const box = document.createElement('div');
+            box.textContent = text;
+            box.style.cssText = 'position:fixed;left:8px;right:8px;top:70px;z-index:2147483647;padding:8px 10px;'
+                + 'border-radius:8px;font:12px/1.35 sans-serif;color:#fff;white-space:pre-wrap;word-break:break-word;'
+                + 'background:' + (isError ? '#b71c1c' : '#2e7d32') + ';box-shadow:0 2px 8px rgba(0,0,0,.4)';
+            (document.body || document.documentElement).appendChild(box);
+            box.addEventListener('click', () => box.remove());
+            if (!isError) setTimeout(() => box.remove(), 4000);
+        } catch (_) {}
+    }
+
+    let _trBootErrors = 0;
     function boot() {
         if (!document.body) {
             setTimeout(boot, 200);
             return;
         }
-        try { init(); }
+        try {
+            init();
+            trNotice('Sidearm TR ' + TR_VERSION + ' çalışıyor. Yuvarlak "Sidearm" butonu sağ altta olmalı.', false);
+        }
         catch (e) {
             console.error('[TPS] boot', e);
+            if (++_trBootErrors <= 1) trNotice('Sidearm TR açılırken hata verdi (ekran görüntüsü al, dokununca kapanır):\n' + (e && (e.stack || e.message) || e), true);
             setTimeout(boot, 1000);
         }
     }
