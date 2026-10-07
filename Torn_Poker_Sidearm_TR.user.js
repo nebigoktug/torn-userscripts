@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn - Poker Sidearm TR
 // @namespace    https://greasyfork.org/users/nebigoktug
-// @version      1.0.3
+// @version      1.0.4
 // @description  Turkish translation of Poker Sidearm 8.7.1: FOLD / CALL / RAISE advice at Torn poker with Turkish explanations. Torn button names stay in English.
 // @author       S7upidity, NebiGoktug
 // @license      MIT
@@ -15,20 +15,20 @@
 // @grant        GM.xmlHttpRequest
 // ==/UserScript==
 
-// Turkish translation of S7upidity’s MIT-licensed "Torn - Poker Sidearm" 8.7.1
+// Turkish translation of S7upidity\u2019s MIT-licensed "Torn - Poker Sidearm" 8.7.1
 // (greasyfork.org/scripts/596796). Advice logic is unchanged; only on-screen
 // explanations are translated. Based on 8.7.1 on purpose: the 8.8.1 "research"
-// setup sends the Torn API key to the author’s server (s7-access.s7access.workers.dev).
+// setup sends the Torn API key to the author\u2019s server (s7-access.s7access.workers.dev).
 // The only outside connection here is ffscouter.com, and only if a key is entered.
 // Copy/export output (hand notes, JSON/CSV) stays in English for analysis.
 
 (function () {
     'use strict';
 
-    // PDA script’i sayfa içi geçişlerde yeniden yükleyebilir; ikinci kopya çalışmasın.
+    // PDA script\u2019i sayfa içi geçişlerde yeniden yükleyebilir; ikinci kopya çalışmasın.
     if (window.__tpsTrRunning) return;
     window.__tpsTrRunning = true;
-    const TR_VERSION = '1.0.3';
+    const TR_VERSION = '1.0.4';
 
     const SETTINGS_KEY = 'tornPokerSidearm_settings';
     const HISTORY_KEY = 'tornPokerSidearm_history';
@@ -145,7 +145,7 @@
         if (s === 'tight') return 'Sınırdaki ellerle daha az oyuna girer, daha az devam eder.';
         if (s === 'wide') return 'Baskı azken bazı riskli ama potansiyelli elleri de oynar.';
         if (s === 'yo-momma') return 'Çok geniş: özellikle geç pozisyonda çok daha fazla elle açar ve ucuz durumlarda devam eder.';
-        return 'Sidearm’ın varsayılan el aralıkları.';
+        return 'Sidearm\u2019ın varsayılan el aralıkları.';
     }
 
     // Range-style boundaries are deliberately explicit. Balanced is the existing
@@ -237,7 +237,7 @@
         'On the board…': 'Masada…', 'Waiting for board': 'Masa kartları bekleniyor', 'Hand': 'El'
     });
     function trMadeHand(s) { return TR_MADE_HAND[s] || s; }
-    // Torn’daki buton adları (FOLD, CALL, RAISE...) İngilizce kalır; Torn’da
+    // Torn\u2019daki buton adları (FOLD, CALL, RAISE...) İngilizce kalır; Torn\u2019da
     // karşılığı olmayan durum etiketleri çevrilir.
     const TR_ACTION_LABEL = Object.freeze({ WAIT: 'BEKLE', FOLDED: 'FOLD EDİLDİ' });
     function trActionLabel(s) { return TR_ACTION_LABEL[s] || s; }
@@ -4940,9 +4940,9 @@
 
     function postflopBetPotLabel(size) {
         const s = String(size || '').toUpperCase();
-        if (s === 'S') return 'potun ~1/3’ü';
+        if (s === 'S') return 'potun ~1/3\u2019ü';
         if (s === 'M') return 'potun ~yarısı';
-        if (s === 'L') return 'potun ~3/4’ü';
+        if (s === 'L') return 'potun ~3/4\u2019ü';
         return '';
     }
 
@@ -5187,11 +5187,11 @@
         if (action === 'check') reason = 'Check bedava; devam etmek için para ödemene gerek yok.';
         else if (action === 'fold') {
             reason = Number.isFinite(po)
-                ? `Call için yaklaşık %${po.toFixed(1)} kazanma şansı gerekiyor; Sidearm’ın tahmini %${eq.winPct.toFixed(1)}.`
+                ? `Call için yaklaşık %${po.toFixed(1)} kazanma şansı gerekiyor; Sidearm\u2019ın tahmini %${eq.winPct.toFixed(1)}.`
                 : 'Tahmini kazanma şansın, ödemen gereken miktara göre çok düşük.';
         } else if (action === 'call') {
             reason = Number.isFinite(po)
-                ? `Sidearm’ın tahmini kazanma şansı %${eq.winPct.toFixed(1)}; call için gereken yaklaşık %${po.toFixed(1)}.`
+                ? `Sidearm\u2019ın tahmini kazanma şansı %${eq.winPct.toFixed(1)}; call için gereken yaklaşık %${po.toFixed(1)}.`
                 : 'Elin devam etmeye yetecek kadar güçlü, ama raise yapmaya yetecek kadar değil.';
         } else if (action === 'bet' || action === 'raise') {
             const size = advice.sizeHint ? ` Önerilen miktar: ${advice.sizeHint}.` : '';
@@ -5201,7 +5201,7 @@
         let modelText = '';
         const model = normaliseEquityModelName(eq.model, eq.villainCount);
         if (model === EQUITY_MODEL_HEADS_UP_RIVER) {
-            modelText = 'River’da kazanma şansı kesin: rakibin olası tüm elleri tek tek kontrol edildi.';
+            modelText = 'River\u2019da kazanma şansı kesin: rakibin olası tüm elleri tek tek kontrol edildi.';
         } else if (Number(eq.villainCount) > 1) {
             modelText = `Kazanma şansı, oyundaki ${eq.villainCount} rakibin hepsine karşı birlikte simüle edildi.`;
         } else {
@@ -5267,12 +5267,12 @@
         } else if (action === '3bet') {
             reason = `Bu el, ${pressureText} karşısında 3-bet (re-raise) yapılacak eller arasında.`;
         } else if (action === '4bet') {
-            reason = `Bu el, şu ana kadarki raise’lere karşı tekrar raise (4-bet+) yapmaya yetecek kadar güçlü.`;
+            reason = `Bu el, şu ana kadarki raise\u2019lere karşı tekrar raise (4-bet+) yapmaya yetecek kadar güçlü.`;
         } else {
-            reason = `Sidearm’ın ${position} pozisyonu için el tablosu bu durumda ${actionVerb(action)} öneriyor.`;
+            reason = `Sidearm\u2019ın ${position} pozisyonu için el tablosu bu durumda ${actionVerb(action)} öneriyor.`;
         }
 
-        let modelText = `Öneri, Sidearm’ın pozisyona göre preflop el tablosuna dayanıyor (stil: ${rangeStyleText}).`;
+        let modelText = `Öneri, Sidearm\u2019ın pozisyona göre preflop el tablosuna dayanıyor (stil: ${rangeStyleText}).`;
         if (ctx.heroEval?.pressureAdjusted) {
             modelText = `Pozisyon tablosu (stil: ${rangeStyleText}) şu anki raise/call baskısına ve devam etmenin maliyetine göre ayarlandı.`;
         } else if (pressure?.bucket === 'limped') {
@@ -7408,8 +7408,8 @@
         const ignoredFolds = recentRows.filter(continuedAgainstFoldAdvice).length;
 
         if (vpipJump >= 18) signals.push('normalden belirgin şekilde fazla el oynuyorsun');
-        if (pfrJump >= 15) signals.push('flop’tan önce normalden çok daha sık raise yapıyorsun');
-        if (ignoredFolds >= 2) signals.push(`Sidearm’ın fold dediği ${ignoredFolds} elde devam ettin`);
+        if (pfrJump >= 15) signals.push('flop\u2019tan önce normalden çok daha sık raise yapıyorsun');
+        if (ignoredFolds >= 2) signals.push(`Sidearm\u2019ın fold dediği ${ignoredFolds} elde devam ettin`);
 
         if (recentStats.threeBetOpp >= 4 && baselineStats.threeBetOpp >= 12 &&
             Number.isFinite(recentStats.threeBetPct) && Number.isFinite(baselineStats.threeBetPct) &&
@@ -7458,7 +7458,7 @@
             } else if (vpipShift >= 18 || pfrShift >= 15) {
                 insights.push({
                     type: 'gear-looser', priority: 100,
-                    text: 'Bu masada eskisinden belirgin şekilde fazla el oynuyorsun. Oyuncular raise’lerini daha az ciddiye almaya başlayabilir.'
+                    text: 'Bu masada eskisinden belirgin şekilde fazla el oynuyorsun. Oyuncular raise\u2019lerini daha az ciddiye almaya başlayabilir.'
                 });
             }
         }
@@ -7491,12 +7491,12 @@
             } else if (pfrVsUsual >= 15) {
                 insights.push({
                     type: 'usual-more-raises', priority: 90,
-                    text: 'Flop’tan önce normalden çok daha sık raise yapıyorsun.'
+                    text: 'Flop\u2019tan önce normalden çok daha sık raise yapıyorsun.'
                 });
             } else if (pfrVsUsual <= -15) {
                 insights.push({
                     type: 'usual-fewer-raises', priority: 90,
-                    text: 'Flop’tan önce normalden çok daha seyrek raise yapıyorsun.'
+                    text: 'Flop\u2019tan önce normalden çok daha seyrek raise yapıyorsun.'
                 });
             }
         }
@@ -7504,19 +7504,19 @@
         if (recentStats.flopPressureOpp >= 5 && recentStats.flopPressureFoldPct >= 70) {
             insights.push({
                 type: 'flop-folding', priority: 90,
-                text: `Flop’ta karşılaştığın ${recentStats.flopPressureOpp} bet/raise’in ${recentStats.flopPressureFolds} tanesinde fold ettin. Oyuncular seni daha sık zorlamaya başlayabilir.`
+                text: `Flop\u2019ta karşılaştığın ${recentStats.flopPressureOpp} bet/raise\u2019in ${recentStats.flopPressureFolds} tanesinde fold ettin. Oyuncular seni daha sık zorlamaya başlayabilir.`
             });
         }
 
         if (recentStats.threeBetOpp >= 5 && recentStats.threeBetPct <= 10) {
             insights.push({
                 type: 'rare-reraise', priority: 82,
-                text: `Flop’tan önce ${recentStats.threeBetOpp} fırsatın sadece ${recentStats.threeBets} tanesinde re-raise yaptın. Senden gelen bir re-raise çok güçlü görünebilir.`
+                text: `Flop\u2019tan önce ${recentStats.threeBetOpp} fırsatın sadece ${recentStats.threeBets} tanesinde re-raise yaptın. Senden gelen bir re-raise çok güçlü görünebilir.`
             });
         } else if (recentStats.threeBetOpp >= 5 && recentStats.threeBetPct >= 35) {
             insights.push({
                 type: 'frequent-reraise', priority: 82,
-                text: `Flop’tan önce ${recentStats.threeBetOpp} fırsatın ${recentStats.threeBets} tanesinde re-raise yaptın. Oyuncular daha çok call edip karşılık vermeye başlayabilir.`
+                text: `Flop\u2019tan önce ${recentStats.threeBetOpp} fırsatın ${recentStats.threeBets} tanesinde re-raise yaptın. Oyuncular daha çok call edip karşılık vermeye başlayabilir.`
             });
         }
 
@@ -7528,7 +7528,7 @@
         } else if (recentStats.hands >= 10 && recentStats.vpipPct >= 45) {
             insights.push({
                 type: 'loose-image', priority: 70,
-                text: 'Son zamanlarda çok el oynadın. Oyuncular her elle oynadığını düşünüp bet’lerine daha sık call edebilir.'
+                text: 'Son zamanlarda çok el oynadın. Oyuncular her elle oynadığını düşünüp bet\u2019lerine daha sık call edebilir.'
             });
         }
 
@@ -7597,9 +7597,9 @@
         const compareRows = [
             ['Preflop oyuna girdi', compactRate(s.vpipPct, s.vpipCount, s.hands), lifetimeReady ? compactRate(l.vpipPct, l.vpipCount, l.hands) : 'Öğreniliyor'],
             ['Preflop raise yaptı', compactRate(s.pfrPct, s.pfrCount, s.hands), lifetimeReady ? compactRate(l.pfrPct, l.pfrCount, l.hands) : 'Öğreniliyor'],
-            ['Raise’e re-raise yaptı', rateWithCount(s.threeBetPct, s.threeBets, s.threeBetOpp), lifetimeReady ? rateWithCount(l.threeBetPct, l.threeBets, l.threeBetOpp) : 'Öğreniliyor'],
+            ['Raise\u2019e re-raise yaptı', rateWithCount(s.threeBetPct, s.threeBets, s.threeBetOpp), lifetimeReady ? rateWithCount(l.threeBetPct, l.threeBets, l.threeBetOpp) : 'Öğreniliyor'],
             ['Flop baskısında fold etti', rateWithCount(s.flopPressureFoldPct, s.flopPressureFolds, s.flopPressureOpp), lifetimeReady ? rateWithCount(l.flopPressureFoldPct, l.flopPressureFolds, l.flopPressureOpp) : 'Öğreniliyor'],
-            ['Showdown’a kadar gitti', compactRate(s.showdownPct, s.showdowns, s.hands), lifetimeReady ? compactRate(l.showdownPct, l.showdowns, l.hands) : 'Öğreniliyor']
+            ['Showdown\u2019a kadar gitti', compactRate(s.showdownPct, s.showdowns, s.hands), lifetimeReady ? compactRate(l.showdownPct, l.showdowns, l.hands) : 'Öğreniliyor']
         ].map(row => `<div class="tps-image-compare-row">
             <span>${escHtml(row[0])}</span><b>${escHtml(row[1])}</b><span>${escHtml(row[2])}</span>
         </div>`).join('');
@@ -7642,9 +7642,9 @@
             <button type="button" class="tps-poker-term-close" aria-label="Kapat">&times;</button>
             <div class="tps-poker-term-title">3-bet nedir?</div>
             <div><b>Sadece re-raise demek.</b></div>
-            <div class="tps-poker-term-copy">Preflop’ta big blind ilk bet sayılır, ilk raise ikinci olur; o oyuncunun raise’ine tekrar raise yapmaya <b>3-bet</b> denir.</div>
-            <div class="tps-poker-term-copy">Biri senin 3-bet’ine tekrar raise yaparsa, buna <b>4-bet</b> denir.</div>
-            <div class="tps-poker-term-copy tps-dim">Sidearm hızlı butonda <b>RE-RAISE</b> gösterir, ayrıntılarda ise poker terimini kullanır. Torn’da yapacağın şey yine <b>Raise</b> butonuna basmak.</div>
+            <div class="tps-poker-term-copy">Preflop\u2019ta big blind ilk bet sayılır, ilk raise ikinci olur; o oyuncunun raise\u2019ine tekrar raise yapmaya <b>3-bet</b> denir.</div>
+            <div class="tps-poker-term-copy">Biri senin 3-bet\u2019ine tekrar raise yaparsa, buna <b>4-bet</b> denir.</div>
+            <div class="tps-poker-term-copy tps-dim">Sidearm hızlı butonda <b>RE-RAISE</b> gösterir, ayrıntılarda ise poker terimini kullanır. Torn\u2019da yapacağın şey yine <b>Raise</b> butonuna basmak.</div>
             <div class="tps-poker-term-actions">
                 <button type="button" class="tps-poker-term-btn" data-tps-term-action="got-it">Anladım</button>
                 <button type="button" class="tps-poker-term-btn pri" data-tps-term-action="why">Neden bu el?</button>
@@ -7812,7 +7812,7 @@
                     <div class="tps-dim" style="margin-top:7px">
                         ${s.heroMismatchHands ? `Kimliği eşleşmeyen ${s.heroMismatchHands} el istatistiklere katılmadı. ` : ''}
                         ${s.joinTransitionHands ? `Masaya oturma sırasındaki ${s.joinTransitionHands} el model ayarına katılmadı. ` : ''}
-                        ${s.staleHoleCardHands ? `Sit-out’tan kalma eski kartlı ${s.staleHoleCardHands} el katılmadı. ` : ''}
+                        ${s.staleHoleCardHands ? `Sit-out\u2019tan kalma eski kartlı ${s.staleHoleCardHands} el katılmadı. ` : ''}
                         ${s.incompletePreflopDecisionHands ? `İlk kararı eksik kalan ${s.incompletePreflopDecisionHands} el katılmadı.` : ''}
                     </div>` : ''}
             </div>
@@ -9813,7 +9813,7 @@
         document.head.appendChild(s);
     }
 
-    // TR 1.0.1: 8.8.1’den alındı. Kayıtlı konum ekran dışındaysa buton görünmüyordu.
+    // TR 1.0.1: 8.8.1\u2019den alındı. Kayıtlı konum ekran dışındaysa buton görünmüyordu.
     function viewportSafePosition(el, pos, margin = 6) {
         if (!el || !pos) return null;
         const vw = Math.max(1, Number(window.innerWidth || document.documentElement?.clientWidth || 1));
@@ -10175,7 +10175,7 @@ function buildVerdictHtml(ctx) {
                     <div>
                         <div class="tps-verdict-action" style="color:#b39ddb">BEKLE · BB</div>
                         ${ctx.handTag ? `<div class="tps-hand-tag">${escHtml(ctx.handTag)}</div>` : ''}
-                        <div class="tps-dim" style="margin-top:4px">Sıranın big blind’a gelmesi bekleniyor.</div>
+                        <div class="tps-dim" style="margin-top:4px">Sıranın big blind\u2019a gelmesi bekleniyor.</div>
                         <div class="tps-dim">Kimse raise yapmazsa, biri limp yaptığında Sidearm bedava check / raise kararını gösterecek.</div>
                     </div>
                 </div>`;
@@ -10566,7 +10566,7 @@ function buildVerdictHtml(ctx) {
                         <button type="button" class="tps-btn" id="tps-hist-refresh">Yenile</button>
                         <button type="button" class="tps-btn danger" id="tps-hist-clear">Geçmişi sil</button>
                     </div>
-                    <div class="tps-dim" style="margin-top:8px">FF = Fair Fight (FFScouter). Saldırı sayfasını açmak için isme ya da puana dokun. Son ${HISTORY_MAX} potun oyuncu ID’leri saklanır; oyuncu masadan kalksa da puanı görünür.</div>
+                    <div class="tps-dim" style="margin-top:8px">FF = Fair Fight (FFScouter). Saldırı sayfasını açmak için isme ya da puana dokun. Son ${HISTORY_MAX} potun oyuncu ID\u2019leri saklanır; oyuncu masadan kalksa da puanı görünür.</div>
                 </div>
 
                 <div data-pane="scouter" style="display:none">
@@ -10615,20 +10615,20 @@ function buildVerdictHtml(ctx) {
                             <li>Bir Torn API anahtarı oluştur:
                                 <a href="https://www.torn.com/preferences.php#tab=api" target="_blank" rel="noopener" style="color:#a29bfe">Torn → Settings → API Key</a>
                                 (FFScouter için Limited erişim önerilir).</li>
-                            <li>FFScouter’ın
+                            <li>FFScouter\u2019ın
                                 <a href="https://ffscouter.com/" target="_blank" rel="noopener" style="color:#a29bfe">veri politikası ve kullanım şartlarını</a> oku.</li>
                             <li>16 karakterlik anahtarı aşağıya yapıştır, kutuyu işaretle, sonra kaydet.</li>
                         </ol>
                         <label class="tps-check">
                             <input type="checkbox" id="tps-agree" />
-                            <span>ffscouter.com’daki FFScouter veri politikasını ve kullanım şartlarını okudum, kabul ediyorum.</span>
+                            <span>ffscouter.com\u2019daki FFScouter veri politikasını ve kullanım şartlarını okudum, kabul ediyorum.</span>
                         </label>
                         <input class="tps-in" id="tps-reg-key" type="text" autocomplete="off"
                             placeholder="Kaydedilecek Torn/FFScouter anahtarını yapıştır" style="margin-top:8px" />
                         <div class="tps-btns">
-                            <button type="button" class="tps-btn pri" id="tps-register">Anahtarı FFScouter’a kaydet</button>
+                            <button type="button" class="tps-btn pri" id="tps-register">Anahtarı FFScouter\u2019a kaydet</button>
                         </div>
-                        <div class="tps-dim" style="margin-top:6px">Anahtar sadece ffscouter.com’a gönderilir (POST /api/v1/register · signup_source=${escHtml(SIGNUP_SOURCE)})</div>
+                        <div class="tps-dim" style="margin-top:6px">Anahtar sadece ffscouter.com\u2019a gönderilir (POST /api/v1/register · signup_source=${escHtml(SIGNUP_SOURCE)})</div>
                     </div>
                     <div class="tps-status" id="tps-set-status"></div>
                     </div>
@@ -11254,7 +11254,7 @@ function buildVerdictHtml(ctx) {
         }, SAFETY_REFRESH_MS);
     }
 
-    // TR 1.0.2: PDA’da konsol görünmediği için durum ve hatalar ekranda gösterilir.
+    // TR 1.0.2: PDA\u2019da konsol görünmediği için durum ve hatalar ekranda gösterilir.
     function trNotice(text, isError) {
         try {
             const box = document.createElement('div');
