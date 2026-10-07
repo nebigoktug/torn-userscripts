@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Torn RR Martingale & Tracker
 // @namespace    https://greasyfork.org/users/nebigoktug
-// @version      1.0.1
-// @description  Russian Roulette: fills the bet box with the next Martingale amount (you still press Start), tracks today's W/L and profit, shows the loss streak and what the series risks. Optional daily loss limit. No requests, no clicks.
+// @version      1.1.0
+// @description  Russian Roulette: fills the bet box with the next Martingale amount (you still press Start), tracks today's W/L and profit, shows the loss streak and what the series risks. Optional daily loss limit, fast animations, compact layout, confirm button under your finger. No requests, no clicks.
 // @author       NebiGoktug
 // @license      MIT
 // @match        https://www.torn.com/page.php?sid=russianRoulette*
@@ -18,12 +18,12 @@
   if (window.__trrmRunning) return;
   window.__trrmRunning = true;
 
-  const VERSION = '1.0.1';
+  const VERSION = '1.1.0';
   const SETTINGS_KEY = 'trrm_settings';
   const GAMES_KEY = 'trrm_games';
   const STATE_KEY = 'trrm_state';
   const GAMES_MAX = 1000;
-  const DEFAULTS = { base: 0, mult: 2.1, maxSteps: 10, dailyLimit: 0 };
+  const DEFAULTS = { base: 0, mult: 2.1, maxSteps: 10, dailyLimit: 0, fast: true, underFinger: true, compact: true };
 
   // ---------- storage ----------
   function load(key, fallback) {
@@ -169,6 +169,8 @@
       #trrm-pop button.pri { background: #2e7d32 !important; } #trrm-pop button.danger { background: #b71c1c !important; }
       #trrm-pop .note { color: #9fb0c0 !important; font-size: 11px; margin-top: 6px; }
       #trrm-pop .x { float: right; cursor: pointer; font-size: 16px; line-height: 1; }
+      #trrm-pop label.chk { display: flex; align-items: center; gap: 6px; color: #e6edf3 !important; }
+      #trrm-pop label.chk input { width: auto; }
     `;
     document.head.appendChild(s);
   }
@@ -306,6 +308,9 @@
       <label>Multiplier after a loss</label><input id="trrm-mult" value="${settings.mult}" inputmode="decimal">
       <label>Max steps in a series</label><input id="trrm-steps" value="${settings.maxSteps}" inputmode="numeric">
       <label>Daily loss limit (empty = off)</label><input id="trrm-limit" value="${settings.dailyLimit > 0 ? fmt(settings.dailyLimit).replace('$', '') : ''}" inputmode="decimal">
+      <label class="chk"><input type="checkbox" id="trrm-fast" ${settings.fast ? 'checked' : ''}> Fast animations (barrel spin ~0.2 s)</label>
+      <label class="chk"><input type="checkbox" id="trrm-finger" ${settings.underFinger ? 'checked' : ''}> Confirm button under your finger after Start/Join</label>
+      <label class="chk"><input type="checkbox" id="trrm-compact" ${settings.compact ? 'checked' : ''}> Compact layout (hide the big title)</label>
       <div class="note">Plan: ${plan}</div>
       <div class="note">Current series: ${streak} loss${streak === 1 ? '' : 'es'} in a row.</div>
       <div class="btns">
@@ -327,7 +332,10 @@
       if (!(mult >= 1 && mult <= 10)) return alert('Multiplier must be between 1 and 10.');
       if (!(steps >= 1 && steps <= 30)) return alert('Max steps must be between 1 and 30.');
       if (!(limit >= 0)) return alert('Daily loss limit must be an amount like 5m, or empty.');
-      settings = { base, mult, maxSteps: steps, dailyLimit: limit };
+      settings = { base, mult, maxSteps: steps, dailyLimit: limit,
+        fast: pop.querySelector('#trrm-fast').checked,
+        underFinger: pop.querySelector('#trrm-finger').checked,
+        compact: pop.querySelector('#trrm-compact').checked };
       save(SETTINGS_KEY, settings);
       closePop();
       tick();
@@ -398,11 +406,55 @@
     userEdited = false;
   }
 
+  // ---------- look & feel (display only) ----------
+  // Fast: Torn's barrel spin is 1.8 s, skull spin 2.5 s, fades 0.5 s, blood flash 1 s.
+  // Shortening them only changes how long the animation plays; turns still come from Torn.
+  const FAST_CSS = `
+    [class*="appWrapper___"] *, [class*="appWrapper___"] *::before, [class*="appWrapper___"] *::after {
+      animation-duration: 0.2s !important; animation-delay: 0s !important;
+      transition-duration: 0.15s !important; transition-delay: 0s !important; }`;
+  const COMPACT_CSS = `
+    [class*="appHeaderWrapper___"] h4[class*="title___"] { display: none !important; }
+    [class*="appHeaderWrapper___"] hr[class*="delimiter___"] { display: none !important; }
+    [class*="appHeaderWrapper___"] [class*="bottomSection___"]:empty { display: none !important; }
+    [class*="appHeaderWrapper___"] [class*="topSection___"] { align-items: center; flex-wrap: wrap; gap: 4px; }`;
+  function applyLook() {
+    const want = (settings.fast ? FAST_CSS : '') + (settings.compact ? COMPACT_CSS : '');
+    let el = document.getElementById('trrm-look');
+    if (!want) { if (el) el.remove(); return; }
+    if (!el) { el = document.createElement('style'); el.id = 'trrm-look'; document.head.appendChild(el); }
+    if (el.textContent !== want) el.textContent = want;
+  }
+
+  // Under finger: after the user taps Start (or a Join button), Torn opens a confirm
+  // step. Move that confirm button to where the finger already is, so the second tap
+  // lands on it. The user still makes both taps; nothing is clicked for them.
+  let fingerAt = null; // { x, y, until }
+  function moveConfirmUnderFinger() {
+    if (!settings.underFinger || !fingerAt) return;
+    if (Date.now() > fingerAt.until) { fingerAt = null; return; }
+    const buttons = [...document.querySelectorAll('button[data-type="confirm"]')]
+      .filter(b => b.offsetParent !== null || b.getClientRects().length);
+    const btn = buttons.find(b => /^(yes|join|start|confirm)$/i.test((b.textContent || '').trim())) || buttons[0];
+    if (!btn || btn.dataset.trrmMoved) return;
+    const r = btn.getBoundingClientRect();
+    btn.dataset.trrmMoved = '1';
+    Object.assign(btn.style, {
+      position: 'fixed', zIndex: '999999',
+      left: `${Math.round(fingerAt.x - (r.width || 60) / 2)}px`,
+      top: `${Math.round(fingerAt.y - (r.height || 30) / 2)}px`,
+      transform: 'scale(1.4)', transformOrigin: 'center center'
+    });
+    fingerAt = null;
+  }
+
   // ---------- main loop ----------
   function tick() {
     if (document.hidden) return;
     try {
       injectStyles();
+      applyLook();
+      moveConfirmUnderFinger();
       checkGame();
       autofill();
       renderBar();
@@ -436,6 +488,19 @@
       if (e.target && e.target.matches && e.target.matches('input.input-money, input[aria-label="Money value"]')) {
         if (e.isTrusted) userEdited = true;
         schedule();
+      }
+    }, true);
+    // Remember where the user tapped Start/Join; the confirm button gets moved there.
+    document.addEventListener('click', e => {
+      const b = e.target && e.target.closest && e.target.closest('button[class*="submit___"]');
+      if (b && !b.matches('[data-type="confirm"]') && e.clientX + e.clientY > 0) {
+        // Torn may reuse the confirm button; put any earlier moved one back first.
+        document.querySelectorAll('button[data-trrm-moved]').forEach(m => {
+          delete m.dataset.trrmMoved;
+          ['position', 'zIndex', 'left', 'top', 'transform', 'transformOrigin'].forEach(k => { m.style[k] = ''; });
+        });
+        fingerAt = { x: e.clientX, y: e.clientY, until: Date.now() + 4000 };
+        setTimeout(schedule, 50);
       }
     }, true);
     document.addEventListener('click', e => {
