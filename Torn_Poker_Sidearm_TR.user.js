@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn - Poker Sidearm TR
 // @namespace    https://greasyfork.org/users/nebigoktug
-// @version      1.0.4
+// @version      1.0.5
 // @description  Turkish translation of Poker Sidearm 8.7.1: FOLD / CALL / RAISE advice at Torn poker with Turkish explanations. Torn button names stay in English.
 // @author       S7upidity, NebiGoktug
 // @license      MIT
@@ -28,7 +28,7 @@
     // PDA script\u2019i sayfa içi geçişlerde yeniden yükleyebilir; ikinci kopya çalışmasın.
     if (window.__tpsTrRunning) return;
     window.__tpsTrRunning = true;
-    const TR_VERSION = '1.0.4';
+    const TR_VERSION = '1.0.5';
 
     const SETTINGS_KEY = 'tornPokerSidearm_settings';
     const HISTORY_KEY = 'tornPokerSidearm_history';
@@ -11276,7 +11276,6 @@ function buildVerdictHtml(ctx) {
         }
         try {
             init();
-            trNotice('Sidearm TR ' + TR_VERSION + ' çalışıyor. Yuvarlak "Sidearm" butonu sağ altta olmalı.', false);
         }
         catch (e) {
             console.error('[TPS] boot', e);
