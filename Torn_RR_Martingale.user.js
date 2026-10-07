@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RR Martingale & Tracker
 // @namespace    https://greasyfork.org/users/nebigoktug
-// @version      1.0.0
+// @version      1.0.1
 // @description  Russian Roulette: fills the bet box with the next Martingale amount (you still press Start), tracks today's W/L and profit, shows the loss streak and what the series risks. Optional daily loss limit. No requests, no clicks.
 // @author       NebiGoktug
 // @license      MIT
@@ -18,7 +18,7 @@
   if (window.__trrmRunning) return;
   window.__trrmRunning = true;
 
-  const VERSION = '1.0.0';
+  const VERSION = '1.0.1';
   const SETTINGS_KEY = 'trrm_settings';
   const GAMES_KEY = 'trrm_games';
   const STATE_KEY = 'trrm_state';
@@ -203,7 +203,7 @@
       const lostSoFar = seriesLost(nb.streak);
       const ifLost = lostSoFar + nb.amount;
       const typed = inp ? inputAmount(inp) : 0;
-      const manual = inp && typed > 0 && typed !== nb.amount;
+      const manual = inp && userEdited && typed > 0 && typed !== nb.amount;
       if (manual) cls = 'manual';
       html = `<b>Martingale</b> · step ${nb.streak + 1}/${settings.maxSteps} · `
         + (manual ? `your bet <b>${fmt(typed)}</b> (plan: ${fmt(nb.amount)})` : `<b>${fmt(nb.amount)}</b> filled`)
@@ -215,19 +215,27 @@
     if (bar.innerHTML !== html) bar.innerHTML = html;
   }
 
+  // Torn pre-fills the box (e.g. "10" or the last bet), so the value alone can't tell
+  // whether the user chose it. userEdited is set only by the user's own typing or the
+  // $ (max) button, and cleared when the box is re-rendered or a game is recorded.
+  let userEdited = false;
+  let lastInput = null;
+
   function autofill() {
     const inp = betInput();
-    if (!inp) { lastAutoValue = null; return; }
+    if (!inp) { lastAutoValue = null; lastInput = null; return; }
+    if (inp !== lastInput) { lastInput = inp; userEdited = false; }
     const nb = nextBet();
     const cur = inputAmount(inp);
+    if (userEdited && cur === 0) userEdited = false; // emptied box: back to the plan
     if (nb.block) {
       // Clear only what we wrote ourselves; never touch the user's own amount.
-      if (lastAutoValue != null && cur === lastAutoValue) { fillBet(inp, ''); lastAutoValue = null; }
+      if (!userEdited && lastAutoValue != null && cur === lastAutoValue) { fillBet(inp, ''); lastAutoValue = null; }
       return;
     }
-    // Fill when the box is empty or still holds our previous amount (the user has not edited it).
+    if (userEdited) return;
     if (cur === nb.amount) { lastAutoValue = nb.amount; return; }
-    if (cur === 0 || (lastAutoValue != null && cur === lastAutoValue)) fillBet(inp, nb.amount);
+    fillBet(inp, nb.amount);
   }
 
   function ensureLine() {
@@ -386,7 +394,8 @@
       save(STATE_KEY, state);
     }
     save(GAMES_KEY, games);
-    // lastAutoValue stays: the box still holds our old amount, so autofill replaces it with the next step.
+    // New game: whatever is in the box now gets replaced with the next step.
+    userEdited = false;
   }
 
   // ---------- main loop ----------
@@ -421,9 +430,19 @@
       if (external) schedule();
     }).observe(document.body, { childList: true, subtree: true, characterData: true });
     document.addEventListener('visibilitychange', () => { if (!document.hidden) schedule(); });
-    // Keep the bet box in sync if the user types in it.
+    // The user's own typing (trusted events only; our fills are untrusted) or a tap on
+    // Torn's $ (max) button marks the bet as chosen by the user.
     document.addEventListener('input', e => {
-      if (e.target && e.target.matches && e.target.matches('input.input-money, input[aria-label="Money value"]')) schedule();
+      if (e.target && e.target.matches && e.target.matches('input.input-money, input[aria-label="Money value"]')) {
+        if (e.isTrusted) userEdited = true;
+        schedule();
+      }
+    }, true);
+    document.addEventListener('click', e => {
+      if (e.target && e.target.closest && e.target.closest('#moneyInput, .input-money-symbol')) {
+        userEdited = true;
+        setTimeout(schedule, 50);
+      }
     }, true);
     tick();
   }
