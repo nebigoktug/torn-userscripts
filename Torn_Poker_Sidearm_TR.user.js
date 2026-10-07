@@ -1,9 +1,9 @@
 // ==UserScript==
 // @name         Torn - Poker Sidearm TR
 // @namespace    https://greasyfork.org/users/nebigoktug
-// @version      1.0.2
-// @description  Poker Sidearm 8.7.1’in Türkçe sürümü: Torn poker masasında FOLD / CALL / RAISE önerisi ve Türkçe açıklamalar. Buton adları Torn’daki gibi İngilizce.
-// @author       S7upidity (orijinal), NebiGoktug (Türkçe çeviri)
+// @version      1.0.3
+// @description  Turkish translation of Poker Sidearm 8.7.1: FOLD / CALL / RAISE advice at Torn poker with Turkish explanations. Torn button names stay in English.
+// @author       S7upidity, NebiGoktug
 // @license      MIT
 // @match        *://www.torn.com/page.php?sid=holdem*
 // @match        *://torn.com/page.php?sid=holdem*
@@ -15,13 +15,12 @@
 // @grant        GM.xmlHttpRequest
 // ==/UserScript==
 
-// Bu script, S7upidity’nin MIT lisanslı "Torn - Poker Sidearm" 8.7.1 sürümünün
-// (greasyfork.org/scripts/596796) Türkçe çevirisidir. Tavsiye mantığına
-// dokunulmadı; sadece ekranda görünen açıklamalar Türkçeleştirildi.
-// Bilerek 8.7.1 seçildi: 8.8.1’deki "research" kurulumu Torn API anahtarını
-// yazarın sunucusuna (s7-access.s7access.workers.dev) gönderiyor; 8.7.1’de bu
-// kısım yok. Dışarıya tek bağlantı, anahtar girilirse ffscouter.com.
-// Kopya/indirme çıktıları (el notu, JSON/CSV) analiz için İngilizce bırakıldı.
+// Turkish translation of S7upidity’s MIT-licensed "Torn - Poker Sidearm" 8.7.1
+// (greasyfork.org/scripts/596796). Advice logic is unchanged; only on-screen
+// explanations are translated. Based on 8.7.1 on purpose: the 8.8.1 "research"
+// setup sends the Torn API key to the author’s server (s7-access.s7access.workers.dev).
+// The only outside connection here is ffscouter.com, and only if a key is entered.
+// Copy/export output (hand notes, JSON/CSV) stays in English for analysis.
 
 (function () {
     'use strict';
@@ -29,7 +28,7 @@
     // PDA script’i sayfa içi geçişlerde yeniden yükleyebilir; ikinci kopya çalışmasın.
     if (window.__tpsTrRunning) return;
     window.__tpsTrRunning = true;
-    const TR_VERSION = '1.0.2';
+    const TR_VERSION = '1.0.3';
 
     const SETTINGS_KEY = 'tornPokerSidearm_settings';
     const HISTORY_KEY = 'tornPokerSidearm_history';

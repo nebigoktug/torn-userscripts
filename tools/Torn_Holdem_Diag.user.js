@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Holdem Diag
 // @namespace    https://greasyfork.org/users/nebigoktug
-// @version      0.1.0
+// @version      0.1.1
 // @description  Temporary diagnostic: shows on the poker page whether Poker Sidearm TR started, where its button is, and any script errors. Remove after use.
 // @author       NebiGoktug
 // @license      MIT
@@ -20,6 +20,7 @@
   const started = Date.now();
   const errors = [];
   window.addEventListener('error', (e) => {
+    if (!e.message) return; // resource load errors (images etc.) carry no message
     errors.push(`${e.message || e} @ ${String(e.filename || '').split('/').pop()}:${e.lineno || '?'}`);
   }, true);
   window.addEventListener('unhandledrejection', (e) => {
