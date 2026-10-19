@@ -2,7 +2,7 @@
 // @name         Torn RR Martingale & Tracker
 // @namespace    https://greasyfork.org/users/nebigoktug
 // @version      1.3.0
-// @description  Russian Roulette: fills the bet box with the next Martingale amount (you still press Start), tracks today's W/L and profit, shows the loss streak and what the series risks. Optional daily loss limit, fast animations, compact layout, confirm button under your finger. Optional log-only API key: games you left early are read from your RR log, so the series stays right. No clicks.
+// @description  Russian Roulette: fills the bet box with the next Martingale (or custom) bet, you still press Start. Shows win % on shoot/x2/x3, what the series risks and what your cash covers, marks open games matching your bet, tracks W/L and profit with a 30-day chart. Daily loss limit, profit target, no animations, compact layout, confirm under finger. Optional log-only API key catches games you left early. No clicks.
 // @author       NebiGoktug
 // @license      MIT
 // @match        https://www.torn.com/page.php?sid=russianRoulette*
@@ -25,7 +25,11 @@
   const STATE_KEY = 'trrm_state';
   const APIKEY_KEY = 'trrm_apikey';
   const GAMES_MAX = 5000;
-  const DEFAULTS = { base: 0, mult: 2.1, maxSteps: 10, dailyLimit: 0, fast: true, underFinger: true, compact: true };
+  // list: custom bets per step (overrides base/mult/maxSteps when not empty)
+  // target: daily profit target (display only) · flash: flash + vibrate on a result
+  const DEFAULTS = { base: 0, mult: 2.1, maxSteps: 10, list: [], dailyLimit: 0, target: 0,
+    fast: true, underFinger: true, compact: true, flash: false };
+  const HOSPITAL_MIN = 20; // a lost game sends you to hospital for about this long
 
   // ---------- storage ----------
   function load(key, fallback) {
@@ -45,7 +49,8 @@
   // unlockDay: TCT day on which the daily loss limit was unlocked
   // open: { t, bet } for a game seen running whose result hasn't been seen yet
   // logCursor: timestamp (s) of the newest RR log entry imported; 0 = rebuild from the log
-  const STATE_DEFAULTS = { seriesFromT: 0, unlockDay: '', open: null, logCursor: 0 };
+  // ignoredIds: log ids removed with "Undo last result", never imported again
+  const STATE_DEFAULTS = { seriesFromT: 0, unlockDay: '', open: null, logCursor: 0, ignoredIds: [] };
   let state = Object.assign({}, STATE_DEFAULTS, load(STATE_KEY, {}));
   // Pre-release 1.2.0 read the activity log panel and could count games twice. Drop
   // those imports; with a key the log rebuild below puts the real games back.
@@ -107,9 +112,26 @@
     }
     return n;
   }
+  function useList() { return Array.isArray(settings.list) && settings.list.length > 0; }
+  function maxSteps() { return useList() ? settings.list.length : settings.maxSteps; }
+  function startBet() { return useList() ? settings.list[0] : settings.base; }
   function stepAmount(step) {
+    if (useList()) return settings.list[Math.min(step, settings.list.length - 1)];
     return Math.round(settings.base * Math.pow(settings.mult, step));
   }
+  // Sum of the bets from step `from` to the last step.
+  function costFrom(from) {
+    let s = 0;
+    for (let i = from; i < maxSteps(); i++) s += stepAmount(i);
+    return s;
+  }
+  // How many of the remaining steps (from `from`) the given cash pays for, in a row.
+  function stepsCovered(from, money) {
+    let n = 0, s = 0;
+    for (let i = from; i < maxSteps(); i++) { s += stepAmount(i); if (s > money) break; n++; }
+    return n;
+  }
+  const oneIn = k => `1 in ${Math.pow(2, k) >= 1e6 ? Math.round(Math.pow(2, k) / 1e6) + 'm' : Math.pow(2, k).toLocaleString('en-US')}`;
   // Total lost so far in the current series (consecutive losses)
   function seriesLost(streak) {
     let s = 0;
@@ -137,21 +159,21 @@
   // ---------- Martingale decision ----------
   // Returns { amount, block, note } where block is a reason not to fill.
   function nextBet() {
-    if (!(settings.base > 0)) return { amount: 0, block: 'Set your start bet in ⚙ first.' };
+    if (!(startBet() > 0)) return { amount: 0, block: 'Set your start bet in ⚙ first.' };
     if (openGameUnseen()) return { amount: 0, block: 'open' };
     const streak = lossStreak();
     const tg = todayGames();
     const net = tg.reduce((s, g) => s + profitOf(g), 0);
     if (settings.dailyLimit > 0 && net <= -settings.dailyLimit && state.unlockDay !== today()) {
-      return { amount: 0, streak, block: `Daily loss limit reached (${fmt(net)}). Unlock in ⚙ if you really want to keep going.` };
+      return { amount: 0, streak, unlock: true, block: `Daily loss limit reached (${fmt(net)}).` };
     }
-    if (streak >= settings.maxSteps) {
-      return { amount: 0, streak, block: `Series lost: ${streak} losses in a row, ${fmt(-seriesLost(streak))}. Tap Reset in ⚙ to start again from ${fmt(settings.base)}.` };
+    if (streak >= maxSteps()) {
+      return { amount: 0, streak, reset: true, block: `Series lost: ${streak} losses in a row, ${fmt(-seriesLost(streak))}.` };
     }
     const amount = stepAmount(streak);
     const c = cash();
     if (c != null && amount > c) {
-      return { amount, streak, block: `Not enough cash for step ${streak + 1} (${fmt(amount)}, you have ${fmt(c)}). Reset the series in ⚙ or add cash.` };
+      return { amount, streak, reset: true, block: `Not enough cash for step ${streak + 1} (${fmt(amount)}, you have ${fmt(c)}).` };
     }
     return { amount, streak };
   }
@@ -188,7 +210,6 @@
       #trrm-bar.manual { border-left-color: #f9a825; }
       #trrm-bar b { color: #fff !important; }
       #trrm-bar .trrm-dim { color: #9fb0c0 !important; }
-      #trrm-bar .trrm-ans { cursor: pointer; text-decoration: underline; color: #9fb0c0 !important; }
       #trrm-bar .trrm-gear, #trrm-line .trrm-gear { cursor: pointer; float: right; padding: 0 2px 0 8px; user-select: none; }
       #trrm-line { display: inline-block; margin: 2px 0 4px; padding: 2px 8px; border-radius: 10px; cursor: pointer;
         font: bold 12px/1.5 Arial, sans-serif; background: #263238 !important; color: #e6edf3 !important; }
@@ -210,6 +231,28 @@
       #trrm-pop .x { float: right; cursor: pointer; font-size: 16px; line-height: 1; }
       #trrm-pop label.chk { display: flex; align-items: center; gap: 6px; color: #e6edf3 !important; }
       #trrm-pop label.chk input { width: auto; }
+      #trrm-bar .trrm-big { font-size: 16px; font-weight: bold; color: #fff !important; }
+      #trrm-bar .trrm-warnc { color: #ffb74d !important; }
+      #trrm-bar .trrm-gear { font-size: 18px; padding: 8px 10px; margin: -8px -8px 0 0; line-height: 1; }
+      .trrm-btn { display: inline-block; min-height: 34px; line-height: 34px; padding: 0 12px; margin: 6px 6px 0 0;
+        border-radius: 5px; cursor: pointer; font-weight: bold; background: #37474f !important; color: #fff !important; }
+      .trrm-btn.danger { background: #b71c1c !important; }
+      #trrm-pop { max-height: 80vh; }
+      #trrm-pop button { min-height: 40px; padding: 0 14px; font-size: 13px; }
+      #trrm-pop .x { font-size: 24px; padding: 6px 10px; margin: -6px -8px 0 0; }
+      #trrm-pop .btns { position: sticky; bottom: -10px; padding: 8px 0; background: #1b2229 !important; }
+      #trrm-pop .prev { color: #81c784 !important; font-size: 11px; }
+      #trrm-pop .err { color: #ef5350 !important; font-size: 12px; min-height: 14px; }
+      #trrm-pop details { margin-top: 8px; } #trrm-pop summary { cursor: pointer; padding: 8px 0; color: #9fb0c0 !important; }
+      #trrm-pop table { width: 100%; border-collapse: collapse; font-size: 11px; margin-top: 4px; }
+      #trrm-pop td, #trrm-pop th { padding: 1px 4px; text-align: right; } #trrm-pop th { color: #9fb0c0 !important; font-weight: normal; }
+      #trrm-key { -webkit-text-security: disc; }
+      #trrm-line.goal { background: #1b5e20 !important; }
+      #trrm-line.flash-win { box-shadow: 0 0 0 3px #66bb6a; } #trrm-line.flash-loss { box-shadow: 0 0 0 3px #ef5350; }
+      [class*="buttonsWrap___"] button[data-trrm-p]::after { content: attr(data-trrm-p); display: block; font-size: 10px; line-height: 1.1; }
+      [class*="buttonsWrap___"] button[data-trrm-q="best"] { box-shadow: inset 0 -3px 0 #4caf50 !important; }
+      [class*="buttonsWrap___"] button[data-trrm-q="zero"] { box-shadow: inset 0 -3px 0 #e53935 !important; }
+      [class*="joinWrap___"] [class*="row___"][data-trrm-match] { box-shadow: inset 4px 0 0 #4caf50; background: rgba(76,175,80,.12) !important; }
     `;
     document.head.appendChild(s);
   }
@@ -223,10 +266,18 @@
       bar = document.createElement('div');
       bar.id = 'trrm-bar';
       bar.addEventListener('click', e => {
-        if (e.target.closest('.trrm-gear')) { e.preventDefault(); e.stopPropagation(); openSettings(); }
-        if (e.target.closest('.trrm-ans')) { e.preventDefault(); e.stopPropagation(); forgetOpen(); }
+        const act = e.target.closest('.trrm-gear') ? 'settings' : e.target.closest('[data-act]')?.dataset.act;
+        if (!act) return;
+        e.preventDefault(); e.stopPropagation();
+        if (act === 'settings') openSettings();
+        else if (act === 'ignore') forgetOpen();
+        else if (act === 'reset') resetSeries();
+        else if (act === 'undo-reset') undoReset();
+        else if (act === 'unlock') armOrRun('unlock', unlockToday);
       });
       wrap.parentNode.insertBefore(bar, wrap);
+      // Back from a game: put the bar (and Start right under it) at the same spot every time.
+      if (justFinished) { justFinished = false; try { bar.scrollIntoView({ block: 'start' }); } catch (_) {} }
     }
     return bar;
   }
@@ -238,30 +289,79 @@
     const inp = betInput();
     let cls = '';
     let html;
-    if (nb.block === 'open') {
+    if (Date.now() < undoUntil) {
+      html = `Series reset · next bet ${fmt(startBet())} <span class="trrm-btn" data-act="undo-reset">Undo</span>`;
+    } else if (nb.block === 'open') {
       const o = state.open;
       cls = 'warn';
-      html = `<b>Martingale</b> · The ${fmt(o.bet)} game from ${new Date(o.t).toISOString().slice(11, 16)} TCT ended while you were away. `
+      html = `The ${fmt(o.bet)} game from ${new Date(o.t).toISOString().slice(11, 16)} TCT ended while you were away. `
         + (!apiKey() ? 'Add a log key in ⚙ to read its result.'
           : syncError ? `Couldn't read your log: ${syncError}.` : 'Reading the result from your log…')
-        + ` <span class="trrm-ans" title="Forget this game">ignore</span>`;
+        + ` <span class="trrm-btn" data-act="ignore">Ignore it</span>`;
     } else if (nb.block) {
       cls = 'warn';
-      html = `<b>Martingale</b> · ${nb.block}`;
+      html = nb.block
+        + (nb.reset ? ` <span class="trrm-btn" data-act="reset">Reset series</span>` : '')
+        + (nb.unlock ? ` <span class="trrm-btn danger" data-act="unlock">${armed === 'unlock' ? 'Tap again to unlock' : 'Unlock today'}</span>` : '');
     } else {
-      const lostSoFar = seriesLost(nb.streak);
-      const ifLost = lostSoFar + nb.amount;
+      const s = nb.streak, N = maxSteps();
+      const lostSoFar = seriesLost(s);
       const typed = inp ? inputAmount(inp) : 0;
       const manual = inp && userEdited && typed > 0 && typed !== nb.amount;
+      const bet = manual ? typed : nb.amount;
       if (manual) cls = 'manual';
-      html = `<b>Martingale</b> · step ${nb.streak + 1}/${settings.maxSteps} · `
-        + (manual ? `your bet <b>${fmt(typed)}</b> (plan: ${fmt(nb.amount)})` : `<b>${fmt(nb.amount)}</b> filled`)
-        + `<br><span class="trrm-dim">If this game is lost too, the series is down ${fmt(manual ? lostSoFar + typed : ifLost)}`
-        + ` · a win now gives ${signed((manual ? typed : nb.amount) - lostSoFar)} for the series</span>`;
+      const left = N - s;
+      const c = cash();
+      const covered = c == null ? null : stepsCovered(s, c);
+      html = `<span class="trrm-big">${fmt(bet)}</span> step ${s + 1}/${N}`
+        + (manual ? ` · <span class="trrm-warnc">your bet (plan ${fmt(nb.amount)})</span>` : '')
+        + `<br><span class="trrm-dim">win ${signed(bet - lostSoFar)} · lose ${fmt(-(lostSoFar + bet))}`
+        + ` · all ${left} lost (${oneIn(left)}) ${fmt(-(lostSoFar + costFrom(s)))}</span>`
+        + (covered == null ? '' : ` <span class="${covered < left ? 'trrm-warnc' : 'trrm-dim'}">· cash ${covered}/${left}</span>`);
     }
     html = `<span class="trrm-gear" title="Settings">⚙</span>` + html;
     if (bar.className !== cls) bar.className = cls;
     if (bar.innerHTML !== html) bar.innerHTML = html;
+  }
+
+  // Dangerous actions take two taps on the same button (no browser dialogs on PDA).
+  let armed = '';
+  let armTimer = null;
+  function armOrRun(name, fn) {
+    if (armed === name) { armed = ''; clearTimeout(armTimer); fn(); return; }
+    armed = name;
+    clearTimeout(armTimer);
+    armTimer = setTimeout(() => { armed = ''; tick(); refreshPopButtons(); }, 3000);
+    tick();
+    refreshPopButtons();
+  }
+
+  // Reset with a 5 s undo instead of a confirmation.
+  let undoUntil = 0;
+  let undoSeriesFromT = 0;
+  function resetSeries() {
+    reloadStored();
+    undoSeriesFromT = state.seriesFromT;
+    state.seriesFromT = Date.now();
+    save(STATE_KEY, state);
+    undoUntil = Date.now() + 5000;
+    setTimeout(schedule, 5100);
+    closePop();
+    tick();
+  }
+  function undoReset() {
+    reloadStored();
+    state.seriesFromT = undoSeriesFromT;
+    save(STATE_KEY, state);
+    undoUntil = 0;
+    tick();
+  }
+  function unlockToday() {
+    reloadStored();
+    state.unlockDay = today();
+    save(STATE_KEY, state);
+    closePop();
+    tick();
   }
 
   // Torn pre-fills the box (e.g. "10" or the last bet), so the value alone can't tell
@@ -307,9 +407,23 @@
     const net = tg.reduce((s, g) => s + profitOf(g), 0);
     const w = tg.filter(g => g.win).length;
     const streak = lossStreak();
-    const html = `Today <span class="${net >= 0 ? 'pos' : 'neg'}">${signed(net)}</span> · ${w}W-${tg.length - w}L`
-      + (streak ? ` · <span class="neg">${streak}L streak</span>` : '');
+    const goal = settings.target > 0 && net >= settings.target;
+    // During a game the bar is gone; this line is the only thing on screen.
+    const inGame = state.open && document.querySelector('[class*="barrel___"]');
+    const html = (goal ? '🎯 ' : '') + `Today <span class="${net >= 0 ? 'pos' : 'neg'}">${signed(net)}</span> · ${w}W-${tg.length - w}L`
+      + (streak ? ` · <span class="neg">${streak}L streak</span>` : '')
+      + (inGame ? ` · step ${streak + 1} · ${fmt(state.open.bet)} at stake` : '');
     if (line.innerHTML !== html) line.innerHTML = html;
+    line.classList.toggle('goal', goal);
+  }
+
+  function flashResult(win) {
+    if (!settings.flash) return;
+    try { navigator.vibrate && navigator.vibrate(win ? 60 : [90, 60, 90]); } catch (_) {}
+    const line = document.getElementById('trrm-line');
+    if (!line) return;
+    line.classList.add(win ? 'flash-win' : 'flash-loss');
+    setTimeout(() => line.classList.remove('flash-win', 'flash-loss'), 700);
   }
 
   function closePop() { document.getElementById('trrm-pop')?.remove(); }
@@ -323,6 +437,24 @@
     return pop;
   }
 
+  // Cumulative profit per TCT day over the last `days` days, as a small inline SVG.
+  function sparkline(days) {
+    const end = Date.parse(today());
+    const pts = [];
+    let sum = 0;
+    for (let d = days - 1; d >= 0; d--) {
+      const day = tctDay(end - d * 864e5);
+      sum += games.filter(g => tctDay(g.t) === day).reduce((s, g) => s + profitOf(g), 0);
+      pts.push(sum);
+    }
+    const lo = Math.min(0, ...pts), hi = Math.max(0, ...pts), span = hi - lo || 1;
+    const W = 300, H = 46, x = i => (i / (pts.length - 1)) * W, y = v => H - 2 - ((v - lo) / span) * (H - 4);
+    const path = pts.map((v, i) => `${i ? 'L' : 'M'}${x(i).toFixed(1)},${y(v).toFixed(1)}`).join('');
+    return `<svg viewBox="0 0 ${W} ${H}" width="100%" height="${H}" preserveAspectRatio="none" style="display:block;margin:4px 0">`
+      + `<line x1="0" x2="${W}" y1="${y(0)}" y2="${y(0)}" stroke="#455a64" stroke-dasharray="3 3"/>`
+      + `<path d="${path}" fill="none" stroke="${sum >= 0 ? '#66bb6a' : '#ef5350'}" stroke-width="2"/></svg>`;
+  }
+
   function openStats() {
     const now = Date.now();
     const recent = games.slice(-20).reverse().map(g => {
@@ -330,60 +462,129 @@
       const hm = d.toISOString().slice(11, 16);
       return `<div class="row"><span>${tctDay(g.t) === today() ? hm : tctDay(g.t).slice(5) + ' ' + hm} TCT</span>`
         + `<span>${g.win ? '✓ Win' : '✗ Loss'}</span><span class="${g.win ? 'pos' : 'neg'}">${signed(profitOf(g))}</span></div>`;
-    }).join('') || '<div class="note">No games recorded yet. Games are recorded when you watch them finish on this page.</div>';
+    }).join('') || '<div class="note">No games recorded yet.</div>';
     const n7 = netSince(now - 7 * 864e5), n30 = netSince(now - 30 * 864e5);
     const tg = todayGames();
     const tnet = tg.reduce((s, g) => s + profitOf(g), 0);
-    openPop(`<h4>Russian Roulette</h4>
+    const pop = openPop(`<h4>Russian Roulette</h4>
       <div class="row"><span>Today (TCT)</span><span class="${tnet >= 0 ? 'pos' : 'neg'}">${signed(tnet)} · ${tg.length} games</span></div>
       <div class="row"><span>Last 7 days</span><span class="${n7 >= 0 ? 'pos' : 'neg'}">${signed(n7)}</span></div>
       <div class="row"><span>Last 30 days</span><span class="${n30 >= 0 ? 'pos' : 'neg'}">${signed(n30)}</span></div>
+      ${sparkline(30)}
       <div class="row"><span>Longest losing streak</span><span>${longestLossStreak()}</span></div>
       <h4 style="margin-top:10px">Last 20 games</h4>${recent}
-      <div class="note">Only games you watch to the end on this page are counted. Stored in this browser only.</div>`);
+      <div class="btns">${games.length ? `<button id="trrm-undo-last">${armed === 'undo-last' ? 'Tap again to remove it' : 'Undo last result'}</button>` : ''}</div>
+      <div class="note">${apiKey() ? 'Synced with your RR log.' : 'Only games you watch to the end are counted; add a log key in ⚙ to catch the rest.'} Stored in this browser only.</div>`);
+    pop.querySelector('#trrm-undo-last')?.addEventListener('click', () => armOrRun('undo-last', undoLast));
+  }
+
+  // Remove the newest recorded game (a miscount). A log entry removed this way is
+  // remembered, so the next sync doesn't bring it back.
+  function undoLast() {
+    reloadStored();
+    const g = games.pop();
+    if (g && g.id) state.ignoredIds = state.ignoredIds.concat(g.id).slice(-100);
+    save(GAMES_KEY, games);
+    save(STATE_KEY, state);
+    userEdited = false;
+    tick();
+    openStats();
+  }
+
+  // Re-label armed buttons inside an open popup.
+  function refreshPopButtons() {
+    const u = document.getElementById('trrm-undo-last');
+    if (u) u.textContent = armed === 'undo-last' ? 'Tap again to remove it' : 'Undo last result';
+    const c = document.getElementById('trrm-clear');
+    if (c) c.textContent = armed === 'clear' ? 'Tap again to delete all' : 'Clear history';
+    const l = document.getElementById('trrm-unlock');
+    if (l) l.textContent = armed === 'unlock' ? 'Tap again to unlock' : 'Unlock today';
+  }
+
+  // Step-by-step plan: bet, total at risk up to that step, chance of getting there.
+  function planTable() {
+    const rows = [];
+    let total = 0;
+    for (let i = 0; i < maxSteps(); i++) {
+      total += stepAmount(i);
+      rows.push(`<tr><td>${i + 1}</td><td>${fmt(stepAmount(i))}</td><td>${fmt(total)}</td><td>${oneIn(i)}</td></tr>`);
+    }
+    return `<table><tr><th>step</th><th>bet</th><th>total in</th><th>reached</th></tr>${rows.join('')}</table>`;
   }
 
   function openSettings() {
     const streak = lossStreak();
-    const plan = settings.base > 0
-      ? Array.from({ length: Math.min(settings.maxSteps, 15) }, (_, i) => fmt(stepAmount(i))).join(' → ')
-      : 'set a start bet';
+    const N = maxSteps();
     const locked = settings.dailyLimit > 0 && todayGames().reduce((s, g) => s + profitOf(g), 0) <= -settings.dailyLimit
       && state.unlockDay !== today();
+    const money = (id, label, v) => `<label>${label}</label><input id="${id}" value="${v > 0 ? v : ''}"
+        inputmode="text" autocapitalize="off" autocomplete="off" spellcheck="false" data-lpignore="true"><div class="prev" data-for="${id}"></div>`;
+    const full = costFrom(0);
+    const p50 = (1 - Math.pow(1 - Math.pow(0.5, N), 50)) * 100;
     const pop = openPop(`<h4>Martingale settings</h4>
-      <label>Start bet (e.g. 100k, 1.5m)</label><input id="trrm-base" value="${settings.base > 0 ? settings.base : ''}" inputmode="decimal">
-      <label>Multiplier after a loss</label><input id="trrm-mult" value="${settings.mult}" inputmode="decimal">
-      <label>Max steps in a series</label><input id="trrm-steps" value="${settings.maxSteps}" inputmode="numeric">
-      <label>Daily loss limit (empty = off)</label><input id="trrm-limit" value="${settings.dailyLimit > 0 ? settings.dailyLimit : ''}" inputmode="decimal">
-      <label>API key with log access (optional)</label><input id="trrm-key" type="password" value="${apiKey()}" autocomplete="off" spellcheck="false">
-      <div class="note">Reads only your Russian Roulette win/loss log, so games you left before the end still count.
-        <a href="https://www.torn.com/preferences.php#tab=api?step=addNewKey&title=RR%20Martingale&user=log" target="_blank" rel="noopener" style="color:#4aa3ff">Create a log-only key</a>.
-        Stored in this browser only, sent only to api.torn.com, nothing is shared.${syncError ? ` <b>${syncError}</b>` : ''}</div>
-
+      ${money('trrm-base', 'Start bet (e.g. 100k, 1.5m)', settings.base)}
+      <label>Multiplier after a loss</label><input id="trrm-mult" value="${settings.mult}" inputmode="decimal" autocomplete="off">
+      <label>Max steps in a series</label><input id="trrm-steps" value="${settings.maxSteps}" inputmode="numeric" autocomplete="off">
+      <label>Custom bets per step (optional, replaces the three above)</label><input id="trrm-list"
+        value="${useList() ? settings.list.map(v => fmt(v).replace('$', '')).join(', ') : ''}" placeholder="100k, 210k, 450k, 1m"
+        inputmode="text" autocapitalize="off" autocomplete="off" spellcheck="false" data-lpignore="true"><div class="prev" data-for="trrm-list"></div>
+      ${money('trrm-limit', 'Daily loss limit (empty = off)', settings.dailyLimit)}
+      ${money('trrm-target', 'Daily profit target (empty = off, the top line turns green)', settings.target)}
       <label class="chk"><input type="checkbox" id="trrm-fast" ${settings.fast ? 'checked' : ''}> No animations (barrel, skull, fades)</label>
       <label class="chk"><input type="checkbox" id="trrm-finger" ${settings.underFinger ? 'checked' : ''}> Confirm button under your finger after Start/Join</label>
       <label class="chk"><input type="checkbox" id="trrm-compact" ${settings.compact ? 'checked' : ''}> Compact layout (hide the big title)</label>
-      <div class="note">Plan: ${plan}</div>
-      <div class="note">Current series: ${streak} loss${streak === 1 ? '' : 'es'} in a row.</div>
+      <label class="chk"><input type="checkbox" id="trrm-flash" ${settings.flash ? 'checked' : ''}> Flash and vibrate on a result</label>
+      <div class="err" id="trrm-err"></div>
       <div class="btns">
         <button class="pri" id="trrm-save">Save</button>
         <button id="trrm-reset">Reset series</button>
-        ${locked ? '<button class="danger" id="trrm-unlock">Unlock today</button>' : ''}
-        <button class="danger" id="trrm-clear">Clear history</button>
+        ${locked ? `<button class="danger" id="trrm-unlock">${armed === 'unlock' ? 'Tap again to unlock' : 'Unlock today'}</button>` : ''}
       </div>
-      <div class="note">Martingale does not change the odds: each game is still 50/50, and a long losing run can wipe out many small wins. The daily limit is there for that.</div>
+      <div class="note">Current series: ${streak} loss${streak === 1 ? '' : 'es'} in a row.</div>
+      ${startBet() > 0 ? planTable() : ''}
+      ${startBet() > 0 ? `<div class="note">Losing all ${N} steps: ${fmt(-full)}, ${oneIn(N)} per series, ${p50.toFixed(1)}% chance in 50 series.
+        Each game is a fair 50/50 with no house cut, so on average Martingale wins nothing: many small wins, now and then one big loss.
+        A series costs about one ${HOSPITAL_MIN} min hospital stay on average; losing all steps is ${N * HOSPITAL_MIN} min.</div>` : ''}
+      <details><summary>Advanced: API key, clear history</summary>
+        <label>API key with log access (optional)</label><input id="trrm-key" value="${apiKey()}" autocomplete="off"
+          autocapitalize="off" spellcheck="false" data-lpignore="true" inputmode="text">
+        <div class="note">Reads only your Russian Roulette win/loss log, so games you left before the end still count.
+          <a href="https://www.torn.com/preferences.php#tab=api?step=addNewKey&title=RR%20Martingale&user=log" target="_blank" rel="noopener" style="color:#4aa3ff">Create a log-only key</a>.
+          Stored in this browser only, sent only to api.torn.com, nothing is shared.${syncError ? ` <b>${syncError}</b>` : ''}</div>
+        <div class="btns"><button class="danger" id="trrm-clear">${armed === 'clear' ? 'Tap again to delete all' : 'Clear history'}</button></div>
+      </details>
       <div class="note">v${VERSION} · fills the bet box only; you press Start/Join yourself.</div>`);
     const val = id => pop.querySelector(id).value;
+    const err = msg => { pop.querySelector('#trrm-err').textContent = msg; };
+    const parseList = text => String(text).split(/[,;\s]+/).filter(Boolean).map(parseMoney);
+    // Live preview of what an amount field will be read as.
+    const preview = () => pop.querySelectorAll('.prev').forEach(el => {
+      const text = String(val('#' + el.dataset.for)).trim();
+      if (!text) { el.textContent = ''; return; }
+      if (el.dataset.for === 'trrm-list') {
+        const l = parseList(text);
+        el.textContent = l.some(v => !(v > 0)) ? '?' : `= ${l.length} steps, ${fmt(l.reduce((a, b) => a + b, 0))} in total`;
+      } else {
+        const v = parseMoney(text);
+        el.textContent = v > 0 ? `= $${v.toLocaleString('en-US')}` : '?';
+      }
+    });
+    pop.addEventListener('input', preview);
+    preview();
     pop.querySelector('#trrm-save').addEventListener('click', () => {
+      const listText = String(val('#trrm-list')).trim();
+      const list = listText ? parseList(listText) : [];
       const base = parseMoney(val('#trrm-base'));
       const mult = parseFloat(String(val('#trrm-mult')).replace(',', '.'));
       const steps = parseInt(val('#trrm-steps'), 10);
-      const limitText = String(val('#trrm-limit')).trim();
-      const limit = limitText ? parseMoney(limitText) : 0;
-      if (!(base > 0)) return alert('Start bet must be an amount like 100k or 1.5m.');
-      if (!(mult >= 1 && mult <= 10)) return alert('Multiplier must be between 1 and 10.');
-      if (!(steps >= 1 && steps <= 30)) return alert('Max steps must be between 1 and 30.');
-      if (!(limit >= 0)) return alert('Daily loss limit must be an amount like 5m, or empty.');
+      const opt = id => { const t = String(val(id)).trim(); return t ? parseMoney(t) : 0; };
+      const limit = opt('#trrm-limit'), target = opt('#trrm-target');
+      if (list.some(v => !(v > 0)) || list.length > 30) return err('Custom bets: up to 30 amounts like 100k, 210k, 450k.');
+      if (!list.length && !(base > 0)) return err('Start bet must be an amount like 100k or 1.5m.');
+      if (!list.length && !(mult >= 1 && mult <= 10)) return err('Multiplier must be between 1 and 10.');
+      if (!list.length && !(steps >= 1 && steps <= 30)) return err('Max steps must be between 1 and 30.');
+      if (!(limit >= 0)) return err('Daily loss limit must be an amount like 5m, or empty.');
+      if (!(target >= 0)) return err('Profit target must be an amount like 5m, or empty.');
       const key = String(val('#trrm-key')).trim();
       if (key !== apiKey()) {
         try { key ? localStorage.setItem(APIKEY_KEY, key) : localStorage.removeItem(APIKEY_KEY); } catch (_) {}
@@ -393,31 +594,19 @@
         save(STATE_KEY, state);
         syncLog(true);
       }
-      settings = { base, mult, maxSteps: steps, dailyLimit: limit,
+      settings = { base: base > 0 ? base : settings.base, mult: mult >= 1 ? mult : settings.mult,
+        maxSteps: steps >= 1 ? steps : settings.maxSteps, list, dailyLimit: limit, target,
         fast: pop.querySelector('#trrm-fast').checked,
         underFinger: pop.querySelector('#trrm-finger').checked,
-        compact: pop.querySelector('#trrm-compact').checked };
+        compact: pop.querySelector('#trrm-compact').checked,
+        flash: pop.querySelector('#trrm-flash').checked };
       save(SETTINGS_KEY, settings);
       closePop();
       tick();
     });
-    pop.querySelector('#trrm-reset').addEventListener('click', () => {
-      reloadStored();
-      state.seriesFromT = Date.now();
-      save(STATE_KEY, state);
-      closePop();
-      tick();
-    });
-    pop.querySelector('#trrm-unlock')?.addEventListener('click', () => {
-      if (!confirm('You hit your daily loss limit. Unlock betting for the rest of today?')) return;
-      reloadStored();
-      state.unlockDay = today();
-      save(STATE_KEY, state);
-      closePop();
-      tick();
-    });
-    pop.querySelector('#trrm-clear').addEventListener('click', () => {
-      if (!confirm('Delete all recorded games? This cannot be undone.')) return;
+    pop.querySelector('#trrm-reset').addEventListener('click', resetSeries);
+    pop.querySelector('#trrm-unlock')?.addEventListener('click', () => armOrRun('unlock', unlockToday));
+    pop.querySelector('#trrm-clear').addEventListener('click', () => armOrRun('clear', () => {
       reloadStored();
       games = [];
       state.seriesFromT = 0;
@@ -427,7 +616,7 @@
       save(STATE_KEY, state);
       closePop();
       tick();
-    });
+    }));
   }
 
   // ---------- game result detection ----------
@@ -436,6 +625,7 @@
   let sawLive = false;
   let recorded = false;
   let liveT = 0; // when this game was first seen running (shared with other tabs via state.open)
+  let justFinished = false; // scroll the bar into place when the create box comes back
 
   // Only the RR message area: other Torn parts (chat button) also use message___ classes,
   // and class*="red___" alone would match colored___ / centered___ too.
@@ -488,6 +678,8 @@
     save(STATE_KEY, state);
     // New game: whatever is in the box now gets replaced with the next step.
     userEdited = false;
+    justFinished = true;
+    flashResult(win);
   }
 
   function forgetOpen() {
@@ -551,7 +743,8 @@
         to = Math.min(...batch.map(l => l.ts)) - 1;
       }
       reloadStored();
-      const found = logs.map(toGame).sort((a, b) => a.t - b.t);
+      const ignored = new Set(state.ignoredIds);
+      const found = logs.map(toGame).filter(g => !ignored.has(g.id)).sort((a, b) => a.t - b.t);
       const known = new Set(games.filter(g => g.id).map(g => g.id));
       const fresh = found.filter(g => !known.has(g.id));
       if (rebuild) {
@@ -680,6 +873,46 @@
     setTimeout(schedule, 4100);
   }
 
+  // ---------- shot odds and join list (display only) ----------
+  // One bullet, 6 chambers, no re-spin. Chance for the player to move to win the game,
+  // both playing their best afterwards, for shoot / x2 / x3 by chambers left.
+  const SHOT_ODDS = { 6: [1 / 2, 1 / 3, 1 / 3], 5: [2 / 5, 2 / 5, 1 / 5], 4: [1 / 2, 1 / 4, 1 / 4], 3: [1 / 3, 1 / 3, 0], 2: [1 / 2, 0], 1: [0] };
+  function chambersLeft() {
+    for (const m of document.querySelectorAll('[class*="messageWrap___"] [class*="message___"]')) {
+      const r = (m.textContent || '').match(/1 in (\d)/);
+      if (r) return +r[1];
+    }
+    const barrel = document.querySelector('[class*="barrel___"]');
+    return barrel ? 6 - barrel.querySelectorAll('[class*="miss___"]').length : 0;
+  }
+  function markShotOdds() {
+    const btns = document.querySelectorAll('[class*="buttonsWrap___"] button[class*="commitButton___"]');
+    if (!btns.length) return;
+    const odds = SHOT_ODDS[chambersLeft()];
+    const best = odds ? Math.max(...odds) : 0;
+    btns.forEach(b => {
+      const p = odds ? odds[(+b.dataset.id || 1) - 1] : undefined;
+      const text = p == null ? null : Math.round(p * 100) + '%';
+      const q = p == null ? null : p === 0 ? 'zero' : p === best ? 'best' : '';
+      if (text == null) { delete b.dataset.trrmP; delete b.dataset.trrmQ; return; }
+      if (b.dataset.trrmP !== text) b.dataset.trrmP = text;
+      if (b.dataset.trrmQ !== q) b.dataset.trrmQ = q;
+    });
+  }
+  // Mark open games whose bet is exactly your next Martingale bet.
+  function markJoinRows() {
+    const rows = document.querySelectorAll('[class*="joinWrap___"] [class*="row___"]');
+    if (!rows.length) return;
+    const nb = nextBet();
+    rows.forEach(r => {
+      const label = r.querySelector('[class*="betBlock___"][aria-label^="Bet amount:"]')?.getAttribute('aria-label') || '';
+      const amount = parseInt(label.replace(/[^\d]/g, ''), 10);
+      const match = !nb.block && amount === nb.amount;
+      if (match && !r.dataset.trrmMatch) r.dataset.trrmMatch = '1';
+      if (!match && r.dataset.trrmMatch) delete r.dataset.trrmMatch;
+    });
+  }
+
   // ---------- main loop ----------
   function tick() {
     if (document.hidden) return;
@@ -691,6 +924,8 @@
       autofill();
       renderBar();
       renderLine();
+      markShotOdds();
+      markJoinRows();
     } catch (e) {
       console.error('[TRRM]', e);
     }
