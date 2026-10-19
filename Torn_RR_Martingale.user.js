@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn RR Martingale & Tracker
 // @namespace    https://greasyfork.org/users/nebigoktug
-// @version      1.2.1
+// @version      1.3.0
 // @description  Russian Roulette: fills the bet box with the next Martingale amount (you still press Start), tracks today's W/L and profit, shows the loss streak and what the series risks. Optional daily loss limit, fast animations, compact layout, confirm button under your finger. Optional log-only API key: games you left early are read from your RR log, so the series stays right. No clicks.
 // @author       NebiGoktug
 // @license      MIT
@@ -19,12 +19,12 @@
   if (window.__trrmRunning) return;
   window.__trrmRunning = true;
 
-  const VERSION = '1.2.1';
+  const VERSION = '1.3.0';
   const SETTINGS_KEY = 'trrm_settings';
   const GAMES_KEY = 'trrm_games';
   const STATE_KEY = 'trrm_state';
   const APIKEY_KEY = 'trrm_apikey';
-  const GAMES_MAX = 1000;
+  const GAMES_MAX = 5000;
   const DEFAULTS = { base: 0, mult: 2.1, maxSteps: 10, dailyLimit: 0, fast: true, underFinger: true, compact: true };
 
   // ---------- storage ----------
@@ -38,7 +38,8 @@
     try { localStorage.setItem(key, JSON.stringify(value)); } catch (_) {}
   }
   let settings = Object.assign({}, DEFAULTS, load(SETTINGS_KEY, {}));
-  // games: [{ t: ms, bet: $, win: bool, id?: Torn log id }], oldest first
+  // games: [{ t: ms, bet: $, win: bool, id?: Torn log id, live?: ms the game was first seen running,
+  //          seen?: true once the page result and the log entry are linked }], oldest first
   let games = load(GAMES_KEY, []);
   // seriesFromT: games before this time (ms) belong to an earlier Martingale series (manual reset)
   // unlockDay: TCT day on which the daily loss limit was unlocked
@@ -434,13 +435,15 @@
   // so reloading a finished game never counts it twice.
   let sawLive = false;
   let recorded = false;
+  let liveT = 0; // when this game was first seen running (shared with other tabs via state.open)
 
+  // Only the RR message area: other Torn parts (chat button) also use message___ classes,
+  // and class*="red___" alone would match colored___ / centered___ too.
   function resultMessage() {
-    const win = document.querySelector('[class*="message___"][class*="green___"]');
-    const loss = document.querySelector('[class*="message___"][class*="red___"]');
-    if (win) return { win: true };
-    if (loss) return { win: false };
-    for (const m of document.querySelectorAll('[class*="message___"]')) {
+    for (const m of document.querySelectorAll('[class*="messageWrap___"] [class*="message___"]')) {
+      const c = String(m.className || '');
+      if (/(^|\s)green___/.test(c)) return { win: true };
+      if (/(^|\s)red___/.test(c)) return { win: false };
       const t = m.textContent || '';
       if (t.includes('You take your winnings')) return { win: true };
       if (t.includes('You fall down')) return { win: false };
@@ -461,23 +464,30 @@
     return !!(state.open && !document.querySelector('[class*="barrel___"]') && !resultMessage());
   }
 
-  const TWIN_MS = 120000;
-  const twin = (a, b) => a.win === b.win && a.bet === b.bet && Math.abs(a.t - b.t) < TWIN_MS;
+  // A page result and a log entry are the same game when outcome and bet match and the
+  // log time falls between the moment the game was first seen running and the moment
+  // its result was seen (a game can run many minutes: each turn has a 3 min timer).
+  // SKEW allows for the phone clock being off from Torn's.
+  const SKEW_MS = 60000;
+  function sameGame(page, log) {
+    if (page.win !== log.win || page.bet !== log.bet) return false;
+    const from = (page.live || page.t) - SKEW_MS;
+    return log.t >= from && log.t <= page.t + SKEW_MS;
+  }
 
-  function record(win, bet, t) {
+  function record(win, bet, live) {
     reloadStored();
-    const g = { t, bet, win };
+    // Another tab on the RR page already recorded this game.
+    if (games.some(o => o.live === live)) { state.open = null; save(STATE_KEY, state); return; }
+    const g = { t: Date.now(), bet, win, live };
     // Already imported from the log (synced while the result was on screen).
-    const fromLog = games.find(o => o.id && !o.seen && twin(o, g));
-    if (fromLog) fromLog.seen = true;
-    else games.push(g);
+    const fromLog = games.filter(o => o.id && !o.seen && sameGame(g, o)).sort((a, b) => a.t - b.t)[0];
+    if (fromLog) { fromLog.seen = true; fromLog.live = live; } else games.push(g);
     state.open = null;
     saveGames();
     save(STATE_KEY, state);
     // New game: whatever is in the box now gets replaced with the next step.
     userEdited = false;
-    // Give this game its log id, so the log never adds it a second time.
-    setTimeout(() => syncLog(true), 4000);
   }
 
   function forgetOpen() {
@@ -488,13 +498,14 @@
   }
 
   // ---------- RR log via the API (optional key) ----------
-  // Only with a key the user gave. Calls: one when the page opens or comes back into
-  // view, one a few seconds after each game, at most one per 15 s. The log ids make
-  // every game unique, so nothing is ever counted twice.
+  // Only with a key the user gave. Calls: one when the page opens and one when it comes
+  // back into view, at most one per 15 s; nothing per game. The log ids make every game
+  // unique, so nothing is ever counted twice.
   const LOG_WIN = 8395, LOG_LOSS = 8396;
   const SYNC_MIN_MS = 15000;
   const REBUILD_DAYS = 30;
   let syncing = false;
+  let syncAgain = false; // a forced sync (e.g. a new key) arrived while one was running
   let lastSync = 0;
   let syncError = '';
 
@@ -520,7 +531,8 @@
 
   async function syncLog(force) {
     const key = apiKey();
-    if (!key || syncing) return;
+    if (!key) return;
+    if (syncing) { if (force) syncAgain = true; return; }
     if (!force && Date.now() - lastSync < SYNC_MIN_MS) return;
     syncing = true;
     lastSync = Date.now();
@@ -531,32 +543,36 @@
       // Page backwards until we reach `since`; a normal sync is a single call.
       const logs = [];
       let to = 0;
+      let complete = false;
       for (let page = 0; page < 20; page++) {
         const batch = await fetchLog(key, since, to);
         logs.push(...batch);
-        if (batch.length < 100) break;
+        if (batch.length < 100) { complete = true; break; }
         to = Math.min(...batch.map(l => l.ts)) - 1;
       }
       reloadStored();
-      const found = logs.map(toGame);
+      const found = logs.map(toGame).sort((a, b) => a.t - b.t);
+      const known = new Set(games.filter(g => g.id).map(g => g.id));
+      const fresh = found.filter(g => !known.has(g.id));
       if (rebuild) {
-        // The log is the truth for the last 30 days: replace whatever was recorded
-        // there, keeping only page results newer than the log (game just ended).
-        const newest = found.reduce((m, g) => Math.max(m, g.t), 0);
-        games = games.filter(g => g.t < since * 1000)
-          .concat(found, games.filter(g => !g.id && g.t >= since * 1000 && g.t > newest + TWIN_MS));
+        // The log is the truth for the window it covered: replace whatever was recorded
+        // there, keeping only page results newer than the log (game just ended). If the
+        // window was too big to fetch, only the part that was fetched is replaced.
+        const fromMs = complete || !found.length ? since * 1000 : found[0].t;
+        const newest = found.length ? found[found.length - 1].t : 0;
+        games = games.filter(g => g.t < fromMs)
+          .concat(found, games.filter(g => !g.id && g.t >= fromMs && g.t > newest + SKEW_MS));
       } else {
-        for (const g of found) {
-          if (games.some(o => o.id === g.id)) continue;
+        for (const g of fresh) {
           // Same game already recorded on the page: give it the log id and server time.
-          const pageTwin = games.find(o => !o.id && twin(o, g));
-          if (pageTwin) { pageTwin.id = g.id; pageTwin.t = g.t; } else games.push(g);
+          const page = games.filter(o => !o.id && sameGame(o, g)).sort((a, b) => a.t - b.t)[0];
+          if (page) { page.id = g.id; page.t = g.t; page.seen = true; } else games.push(g);
         }
       }
-      for (const g of found) {
-        state.logCursor = Math.max(state.logCursor, g.t / 1000);
-        if (state.open && g.t >= state.open.t - TWIN_MS) state.open = null;
-      }
+      for (const g of found) state.logCursor = Math.max(state.logCursor, g.t / 1000);
+      // Only a new entry for this game's bet, from after it started, resolves the open game
+      // (the previous game's entry comes back too: `from` is inclusive).
+      if (state.open && fresh.some(g => g.bet === state.open.bet && g.t >= state.open.t - SKEW_MS)) state.open = null;
       if (!state.logCursor) state.logCursor = since;
       syncError = '';
       saveGames();
@@ -568,6 +584,7 @@
     } finally {
       syncing = false;
       schedule();
+      if (syncAgain) { syncAgain = false; syncLog(true); }
     }
   }
 
@@ -578,10 +595,15 @@
     if (!barrel && !result) { sawLive = false; recorded = false; return; }
     const pot = potAmount();
     if (barrel && !finished && !result) {
+      if (!sawLive) liveT = Date.now();
       sawLive = true; recorded = false;
-      if (pot && !(state.open && state.open.bet === Math.round(pot / 2))) {
+      const bet = Math.round(pot / 2);
+      if (bet && state.open && state.open.bet === bet) {
+        // Same game seen before a reload, or by another tab: keep its start time.
+        liveT = Math.min(liveT, state.open.t);
+      } else if (bet) {
         reloadStored();
-        state.open = { t: Date.now(), bet: Math.round(pot / 2) };
+        state.open = { t: liveT, bet };
         save(STATE_KEY, state);
       }
       return;
@@ -595,7 +617,7 @@
     if (!sawLive || recorded || !result) return;
     if (!pot) return; // wait for the pot to render
     recorded = true;
-    record(result.win, Math.round(pot / 2), Date.now());
+    record(result.win, Math.round(pot / 2), liveT);
   }
 
   // ---------- look & feel (display only) ----------
