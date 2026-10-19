@@ -344,7 +344,7 @@
       <label>Max steps in a series</label><input id="trrm-steps" value="${settings.maxSteps}" inputmode="numeric">
       <label>Daily loss limit (empty = off)</label><input id="trrm-limit" value="${settings.dailyLimit > 0 ? settings.dailyLimit : ''}" inputmode="decimal">
 
-      <label class="chk"><input type="checkbox" id="trrm-fast" ${settings.fast ? 'checked' : ''}> Fast animations (barrel spin ~0.2 s)</label>
+      <label class="chk"><input type="checkbox" id="trrm-fast" ${settings.fast ? 'checked' : ''}> No animations (barrel, skull, fades)</label>
       <label class="chk"><input type="checkbox" id="trrm-finger" ${settings.underFinger ? 'checked' : ''}> Confirm button under your finger after Start/Join</label>
       <label class="chk"><input type="checkbox" id="trrm-compact" ${settings.compact ? 'checked' : ''}> Compact layout (hide the big title)</label>
       <div class="note">Plan: ${plan}</div>
@@ -529,12 +529,13 @@
   }
 
   // ---------- look & feel (display only) ----------
-  // Fast: Torn's barrel spin is 1.8 s, skull spin 2.5 s, fades 0.5 s, blood flash 1 s.
-  // Shortening them only changes how long the animation plays; turns still come from Torn.
+  // No animations: Torn's barrel spin (1.8 s), skull spin (2.5 s), fades and blood flash
+  // are cut to 1 ms. Not 0 / none: Torn's code may wait for animationend/transitionend,
+  // which never fire then. The barrel is only a picture; the result comes from Torn's server.
   const FAST_CSS = `
     [class*="appWrapper___"] *, [class*="appWrapper___"] *::before, [class*="appWrapper___"] *::after {
-      animation-duration: 0.2s !important; animation-delay: 0s !important;
-      transition-duration: 0.15s !important; transition-delay: 0s !important; }`;
+      animation-duration: 1ms !important; animation-delay: 0s !important; animation-iteration-count: 1 !important;
+      transition-duration: 1ms !important; transition-delay: 0s !important; }`;
   const COMPACT_CSS = `
     [class*="appHeaderWrapper___"] h4[class*="title___"] { display: none !important; }
     [class*="appHeaderWrapper___"] hr[class*="delimiter___"] { display: none !important; }
