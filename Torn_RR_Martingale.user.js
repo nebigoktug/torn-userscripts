@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Torn RR Martingale & Tracker
 // @namespace    https://greasyfork.org/users/nebigoktug
-// @version      1.1.0
-// @description  Russian Roulette: fills the bet box with the next Martingale amount (you still press Start), tracks today's W/L and profit, shows the loss streak and what the series risks. Optional daily loss limit, fast animations, compact layout, confirm button under your finger. No requests, no clicks.
+// @version      1.2.0
+// @description  Russian Roulette: fills the bet box with the next Martingale amount (you still press Start), tracks today's W/L and profit, shows the loss streak and what the series risks. Optional daily loss limit, fast animations, compact layout, confirm button under your finger. Asks for the result of a game you left before it finished. No requests, no clicks.
 // @author       NebiGoktug
 // @license      MIT
 // @match        https://www.torn.com/page.php?sid=russianRoulette*
@@ -18,7 +18,7 @@
   if (window.__trrmRunning) return;
   window.__trrmRunning = true;
 
-  const VERSION = '1.1.0';
+  const VERSION = '1.2.0';
   const SETTINGS_KEY = 'trrm_settings';
   const GAMES_KEY = 'trrm_games';
   const STATE_KEY = 'trrm_state';
@@ -38,9 +38,31 @@
   let settings = Object.assign({}, DEFAULTS, load(SETTINGS_KEY, {}));
   // games: [{ t: ms, bet: $, win: bool }], oldest first
   let games = load(GAMES_KEY, []);
-  // seriesFrom: index in games where the current Martingale series starts (after a manual reset)
+  // seriesFromT: games before this time (ms) belong to an earlier Martingale series (manual reset)
   // unlockDay: TCT day on which the daily loss limit was unlocked
-  let state = Object.assign({ seriesFrom: 0, unlockDay: '' }, load(STATE_KEY, {}));
+  // open: { t, bet } for a game seen running whose result hasn't been seen yet
+  const STATE_DEFAULTS = { seriesFromT: 0, unlockDay: '', open: null };
+  let state = Object.assign({}, STATE_DEFAULTS, load(STATE_KEY, {}));
+  // 1.1.x stored the series start as an index into games.
+  if ('seriesFrom' in state) {
+    const i = state.seriesFrom;
+    state.seriesFromT = games[i] ? games[i].t : (i > 0 ? Date.now() : 0);
+    delete state.seriesFrom;
+    save(STATE_KEY, state);
+  }
+
+  // Other tabs on the RR page write the same storage; re-read before every change
+  // so one tab never overwrites games another tab recorded.
+  function reloadStored() {
+    games = load(GAMES_KEY, []);
+    state = Object.assign({}, STATE_DEFAULTS, load(STATE_KEY, {}));
+    settings = Object.assign({}, DEFAULTS, load(SETTINGS_KEY, {}));
+  }
+  function saveGames() {
+    games.sort((a, b) => a.t - b.t);
+    if (games.length > GAMES_MAX) games = games.slice(games.length - GAMES_MAX);
+    save(GAMES_KEY, games);
+  }
 
   // ---------- helpers ----------
   function tctDay(ms) { return new Date(ms).toISOString().slice(0, 10); }
@@ -64,7 +86,7 @@
 
   function lossStreak() {
     let n = 0;
-    for (let i = games.length - 1; i >= state.seriesFrom && i >= 0; i--) {
+    for (let i = games.length - 1; i >= 0 && games[i].t >= state.seriesFromT; i--) {
       if (games[i].win) break;
       n++;
     }
@@ -101,6 +123,7 @@
   // Returns { amount, block, note } where block is a reason not to fill.
   function nextBet() {
     if (!(settings.base > 0)) return { amount: 0, block: 'Set your start bet in ⚙ first.' };
+    if (openGameUnseen()) return { amount: 0, block: 'open' };
     const streak = lossStreak();
     const tg = todayGames();
     const net = tg.reduce((s, g) => s + profitOf(g), 0);
@@ -150,6 +173,8 @@
       #trrm-bar.manual { border-left-color: #f9a825; }
       #trrm-bar b { color: #fff !important; }
       #trrm-bar .trrm-dim { color: #9fb0c0 !important; }
+      #trrm-bar .trrm-ans { display: inline-block; margin: 5px 6px 0 0; padding: 3px 10px; border-radius: 4px; cursor: pointer;
+        background: #37474f !important; color: #fff !important; font-weight: bold; }
       #trrm-bar .trrm-gear, #trrm-line .trrm-gear { cursor: pointer; float: right; padding: 0 2px 0 8px; user-select: none; }
       #trrm-line { display: inline-block; margin: 2px 0 4px; padding: 2px 8px; border-radius: 10px; cursor: pointer;
         font: bold 12px/1.5 Arial, sans-serif; background: #263238 !important; color: #e6edf3 !important; }
@@ -185,6 +210,8 @@
       bar.id = 'trrm-bar';
       bar.addEventListener('click', e => {
         if (e.target.closest('.trrm-gear')) { e.preventDefault(); e.stopPropagation(); openSettings(); }
+        const ans = e.target.closest('.trrm-ans');
+        if (ans) { e.preventDefault(); e.stopPropagation(); resolveOpen(ans.dataset.a); }
       });
       wrap.parentNode.insertBefore(bar, wrap);
     }
@@ -198,7 +225,12 @@
     const inp = betInput();
     let cls = '';
     let html;
-    if (nb.block) {
+    if (nb.block === 'open') {
+      const o = state.open;
+      cls = 'warn';
+      html = `<b>Martingale</b> · You left a ${fmt(o.bet)} game (${new Date(o.t).toISOString().slice(11, 16)} TCT) before it finished. How did it end?`
+        + `<br><span class="trrm-ans" data-a="win">✓ Won</span><span class="trrm-ans" data-a="loss">✗ Lost</span><span class="trrm-ans" data-a="skip">Don't count</span>`;
+    } else if (nb.block) {
       cls = 'warn';
       html = `<b>Martingale</b> · ${nb.block}`;
     } else {
@@ -304,10 +336,11 @@
     const locked = settings.dailyLimit > 0 && todayGames().reduce((s, g) => s + profitOf(g), 0) <= -settings.dailyLimit
       && state.unlockDay !== today();
     const pop = openPop(`<h4>Martingale settings</h4>
-      <label>Start bet (e.g. 100k, 1.5m)</label><input id="trrm-base" value="${settings.base > 0 ? fmt(settings.base).replace('$', '') : ''}" inputmode="decimal">
+      <label>Start bet (e.g. 100k, 1.5m)</label><input id="trrm-base" value="${settings.base > 0 ? settings.base : ''}" inputmode="decimal">
       <label>Multiplier after a loss</label><input id="trrm-mult" value="${settings.mult}" inputmode="decimal">
       <label>Max steps in a series</label><input id="trrm-steps" value="${settings.maxSteps}" inputmode="numeric">
-      <label>Daily loss limit (empty = off)</label><input id="trrm-limit" value="${settings.dailyLimit > 0 ? fmt(settings.dailyLimit).replace('$', '') : ''}" inputmode="decimal">
+      <label>Daily loss limit (empty = off)</label><input id="trrm-limit" value="${settings.dailyLimit > 0 ? settings.dailyLimit : ''}" inputmode="decimal">
+
       <label class="chk"><input type="checkbox" id="trrm-fast" ${settings.fast ? 'checked' : ''}> Fast animations (barrel spin ~0.2 s)</label>
       <label class="chk"><input type="checkbox" id="trrm-finger" ${settings.underFinger ? 'checked' : ''}> Confirm button under your finger after Start/Join</label>
       <label class="chk"><input type="checkbox" id="trrm-compact" ${settings.compact ? 'checked' : ''}> Compact layout (hide the big title)</label>
@@ -341,13 +374,15 @@
       tick();
     });
     pop.querySelector('#trrm-reset').addEventListener('click', () => {
-      state.seriesFrom = games.length;
+      reloadStored();
+      state.seriesFromT = Date.now();
       save(STATE_KEY, state);
       closePop();
       tick();
     });
     pop.querySelector('#trrm-unlock')?.addEventListener('click', () => {
       if (!confirm('You hit your daily loss limit. Unlock betting for the rest of today?')) return;
+      reloadStored();
       state.unlockDay = today();
       save(STATE_KEY, state);
       closePop();
@@ -355,8 +390,10 @@
     });
     pop.querySelector('#trrm-clear').addEventListener('click', () => {
       if (!confirm('Delete all recorded games? This cannot be undone.')) return;
+      reloadStored();
       games = [];
-      state.seriesFrom = 0;
+      state.seriesFromT = 0;
+      state.open = null;
       save(GAMES_KEY, games);
       save(STATE_KEY, state);
       closePop();
@@ -383,27 +420,64 @@
     return null;
   }
 
+  function potAmount() {
+    const potEl = document.querySelector('span[class*="count___"]');
+    const pot = potEl ? parseInt(String(potEl.textContent).replace(/[^\d]/g, ''), 10) : NaN;
+    return pot > 0 ? pot : 0;
+  }
+
+  // A game seen running is stored as open until its result is seen. If you leave
+  // before the end, the next visit asks how it ended instead of silently starting
+  // the series over (a missed loss would otherwise reset the bet to step 1).
+  function openGameUnseen() {
+    return !!(state.open && !document.querySelector('[class*="barrel___"]') && !resultMessage());
+  }
+
+  function record(win, bet, t) {
+    reloadStored();
+    games.push({ t, bet, win });
+    state.open = null;
+    saveGames();
+    save(STATE_KEY, state);
+    // New game: whatever is in the box now gets replaced with the next step.
+    userEdited = false;
+  }
+
+  function resolveOpen(answer) {
+    reloadStored();
+    const o = state.open;
+    if (!o) return tick();
+    if (answer === 'win' || answer === 'loss') return record(answer === 'win', o.bet, o.t), tick();
+    state.open = null;
+    save(STATE_KEY, state);
+    tick();
+  }
+
   function checkGame() {
     const barrel = document.querySelector('[class*="barrel___"]');
     const finished = !!document.querySelector('[class*="barrel___"][class*="finished___"]');
     const result = resultMessage();
     if (!barrel && !result) { sawLive = false; recorded = false; return; }
-    if (barrel && !finished && !result) { sawLive = true; recorded = false; return; }
-    if (!sawLive || recorded || !result) return;
-    const potEl = document.querySelector('span[class*="count___"]');
-    const pot = potEl ? parseInt(String(potEl.textContent).replace(/[^\d]/g, ''), 10) : NaN;
-    if (!(pot > 0)) return; // wait for the pot to render
-    recorded = true;
-    games.push({ t: Date.now(), bet: Math.round(pot / 2), win: result.win });
-    if (games.length > GAMES_MAX) {
-      const drop = games.length - GAMES_MAX;
-      games = games.slice(drop);
-      state.seriesFrom = Math.max(0, state.seriesFrom - drop);
-      save(STATE_KEY, state);
+    const pot = potAmount();
+    if (barrel && !finished && !result) {
+      sawLive = true; recorded = false;
+      if (pot && !(state.open && state.open.bet === Math.round(pot / 2))) {
+        reloadStored();
+        state.open = { t: Date.now(), bet: Math.round(pot / 2) };
+        save(STATE_KEY, state);
+      }
+      return;
     }
-    save(GAMES_KEY, games);
-    // New game: whatever is in the box now gets replaced with the next step.
-    userEdited = false;
+    // Back on the page after the open game ended: the result is still shown, use it.
+    if (!sawLive && result && state.open && !recorded) {
+      recorded = true;
+      record(result.win, state.open.bet, state.open.t);
+      return;
+    }
+    if (!sawLive || recorded || !result) return;
+    if (!pot) return; // wait for the pot to render
+    recorded = true;
+    record(result.win, Math.round(pot / 2), Date.now());
   }
 
   // ---------- look & feel (display only) ----------
@@ -430,7 +504,22 @@
   // step. Move that confirm button to where the finger already is, so the second tap
   // lands on it. The user still makes both taps; nothing is clicked for them.
   let fingerAt = null; // { x, y, until }
+  let movedAt = 0;
+  const MOVED_STYLE = ['position', 'zIndex', 'left', 'top', 'transform', 'transformOrigin'];
+  // React doesn't reset inline styles it didn't set, so a moved button would stay
+  // floating if Torn reuses it for another confirm. Put it back once it's tapped,
+  // the game starts, or the tap window is over.
+  function restoreMoved() {
+    document.querySelectorAll('button[data-trrm-moved]').forEach(m => {
+      delete m.dataset.trrmMoved;
+      MOVED_STYLE.forEach(k => { m.style[k] = ''; });
+    });
+  }
   function moveConfirmUnderFinger() {
+    if (movedAt && (Date.now() - movedAt > 4000 || document.querySelector('[class*="barrel___"]'))) {
+      movedAt = 0;
+      restoreMoved();
+    }
     if (!settings.underFinger || !fingerAt) return;
     if (Date.now() > fingerAt.until) { fingerAt = null; return; }
     const buttons = [...document.querySelectorAll('button[data-type="confirm"]')]
@@ -446,6 +535,8 @@
       transform: 'scale(1.4)', transformOrigin: 'center center'
     });
     fingerAt = null;
+    movedAt = Date.now();
+    setTimeout(schedule, 4100);
   }
 
   // ---------- main loop ----------
@@ -490,17 +581,35 @@
         schedule();
       }
     }, true);
+    // Torn focuses the bet box when the create panel renders, which opens the phone
+    // keyboard over the table. Since the box is filled for you, drop focus unless the
+    // user just tapped the bet area themselves.
+    let lastBetTap = 0;
+    document.addEventListener('pointerdown', e => {
+      if (e.target && e.target.closest && e.target.closest('[class*="createWrap___"], [class*="betBlock___"]')) lastBetTap = Date.now();
+    }, true);
+    document.addEventListener('focusin', e => {
+      const t = e.target;
+      if (t && t.matches && t.matches('input.input-money, input[aria-label="Money value"]') && Date.now() - lastBetTap > 800) t.blur();
+    }, true);
+    // Another tab recorded a game or changed settings.
+    window.addEventListener('storage', e => {
+      if ([GAMES_KEY, STATE_KEY, SETTINGS_KEY].includes(e.key)) { reloadStored(); schedule(); }
+    });
     // Remember where the user tapped Start/Join; the confirm button gets moved there.
     document.addEventListener('click', e => {
       const b = e.target && e.target.closest && e.target.closest('button[class*="submit___"]');
       if (b && !b.matches('[data-type="confirm"]') && e.clientX + e.clientY > 0) {
         // Torn may reuse the confirm button; put any earlier moved one back first.
-        document.querySelectorAll('button[data-trrm-moved]').forEach(m => {
-          delete m.dataset.trrmMoved;
-          ['position', 'zIndex', 'left', 'top', 'transform', 'transformOrigin'].forEach(k => { m.style[k] = ''; });
-        });
+        restoreMoved();
         fingerAt = { x: e.clientX, y: e.clientY, until: Date.now() + 4000 };
         setTimeout(schedule, 50);
+      }
+    }, true);
+    document.addEventListener('click', e => {
+      if (e.target && e.target.closest && e.target.closest('button[data-trrm-moved]')) {
+        // Let Torn handle the tap first, then put the button back.
+        setTimeout(() => { movedAt = 0; restoreMoved(); }, 0);
       }
     }, true);
     document.addEventListener('click', e => {
