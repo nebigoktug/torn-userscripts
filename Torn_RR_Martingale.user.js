@@ -1,14 +1,15 @@
 // ==UserScript==
 // @name         Torn RR Martingale & Tracker
 // @namespace    https://greasyfork.org/users/nebigoktug
-// @version      1.2.0
-// @description  Russian Roulette: fills the bet box with the next Martingale amount (you still press Start), tracks today's W/L and profit, shows the loss streak and what the series risks. Optional daily loss limit, fast animations, compact layout, confirm button under your finger. Reads results of games you left early from Torn's activity log when you open it. No requests, no clicks.
+// @version      1.2.1
+// @description  Russian Roulette: fills the bet box with the next Martingale amount (you still press Start), tracks today's W/L and profit, shows the loss streak and what the series risks. Optional daily loss limit, fast animations, compact layout, confirm button under your finger. Optional log-only API key: games you left early are read from your RR log, so the series stays right. No clicks.
 // @author       NebiGoktug
 // @license      MIT
 // @match        https://www.torn.com/page.php?sid=russianRoulette*
 // @match        https://www.torn.com/loader.php?sid=russianRoulette*
 // @run-at       document-idle
 // @grant        none
+// @connect      api.torn.com
 // ==/UserScript==
 
 (function () {
@@ -18,10 +19,11 @@
   if (window.__trrmRunning) return;
   window.__trrmRunning = true;
 
-  const VERSION = '1.2.0';
+  const VERSION = '1.2.1';
   const SETTINGS_KEY = 'trrm_settings';
   const GAMES_KEY = 'trrm_games';
   const STATE_KEY = 'trrm_state';
+  const APIKEY_KEY = 'trrm_apikey';
   const GAMES_MAX = 1000;
   const DEFAULTS = { base: 0, mult: 2.1, maxSteps: 10, dailyLimit: 0, fast: true, underFinger: true, compact: true };
 
@@ -36,17 +38,22 @@
     try { localStorage.setItem(key, JSON.stringify(value)); } catch (_) {}
   }
   let settings = Object.assign({}, DEFAULTS, load(SETTINGS_KEY, {}));
-  // games: [{ t: ms, bet: $, win: bool, k?: activity log key }], oldest first
+  // games: [{ t: ms, bet: $, win: bool, id?: Torn log id }], oldest first
   let games = load(GAMES_KEY, []);
   // seriesFromT: games before this time (ms) belong to an earlier Martingale series (manual reset)
   // unlockDay: TCT day on which the daily loss limit was unlocked
   // open: { t, bet } for a game seen running whose result hasn't been seen yet
-  // logFromT: activity log results before this time (ms) are never imported
-  const STATE_DEFAULTS = { seriesFromT: 0, unlockDay: '', open: null, logFromT: 0 };
+  // logCursor: timestamp (s) of the newest RR log entry imported; 0 = rebuild from the log
+  const STATE_DEFAULTS = { seriesFromT: 0, unlockDay: '', open: null, logCursor: 0 };
   let state = Object.assign({}, STATE_DEFAULTS, load(STATE_KEY, {}));
-  // Results already in the log when this version first runs were counted (or not) by
-  // the old version; don't import them again.
-  if (!state.logFromT) { state.logFromT = Date.now(); save(STATE_KEY, state); }
+  // Pre-release 1.2.0 read the activity log panel and could count games twice. Drop
+  // those imports; with a key the log rebuild below puts the real games back.
+  if ('logFromT' in state) {
+    games = games.filter(g => !g.k);
+    delete state.logFromT;
+    save(GAMES_KEY, games);
+    save(STATE_KEY, state);
+  }
   // 1.1.x stored the series start as an index into games.
   if ('seriesFrom' in state) {
     const i = state.seriesFrom;
@@ -63,6 +70,9 @@
     settings = Object.assign({}, DEFAULTS, load(SETTINGS_KEY, {}));
   }
   function saveGames() {
+    // Never keep the same log entry twice, whatever path added it.
+    const ids = new Set();
+    games = games.filter(g => !g.id || (!ids.has(g.id) && ids.add(g.id)));
     games.sort((a, b) => a.t - b.t);
     if (games.length > GAMES_MAX) games = games.slice(games.length - GAMES_MAX);
     save(GAMES_KEY, games);
@@ -230,8 +240,9 @@
     if (nb.block === 'open') {
       const o = state.open;
       cls = 'warn';
-      html = `<b>Martingale</b> · The ${fmt(o.bet)} game from ${new Date(o.t).toISOString().slice(11, 16)} TCT ended while you were away.`
-        + ` Open the activity log (top right) once and its result is read from there.`
+      html = `<b>Martingale</b> · The ${fmt(o.bet)} game from ${new Date(o.t).toISOString().slice(11, 16)} TCT ended while you were away. `
+        + (!apiKey() ? 'Add a log key in ⚙ to read its result.'
+          : syncError ? `Couldn't read your log: ${syncError}.` : 'Reading the result from your log…')
         + ` <span class="trrm-ans" title="Forget this game">ignore</span>`;
     } else if (nb.block) {
       cls = 'warn';
@@ -343,6 +354,10 @@
       <label>Multiplier after a loss</label><input id="trrm-mult" value="${settings.mult}" inputmode="decimal">
       <label>Max steps in a series</label><input id="trrm-steps" value="${settings.maxSteps}" inputmode="numeric">
       <label>Daily loss limit (empty = off)</label><input id="trrm-limit" value="${settings.dailyLimit > 0 ? settings.dailyLimit : ''}" inputmode="decimal">
+      <label>API key with log access (optional)</label><input id="trrm-key" type="password" value="${apiKey()}" autocomplete="off" spellcheck="false">
+      <div class="note">Reads only your Russian Roulette win/loss log, so games you left before the end still count.
+        <a href="https://www.torn.com/preferences.php#tab=api?step=addNewKey&title=RR%20Martingale&user=log" target="_blank" rel="noopener" style="color:#4aa3ff">Create a log-only key</a>.
+        Stored in this browser only, sent only to api.torn.com, nothing is shared.${syncError ? ` <b>${syncError}</b>` : ''}</div>
 
       <label class="chk"><input type="checkbox" id="trrm-fast" ${settings.fast ? 'checked' : ''}> No animations (barrel, skull, fades)</label>
       <label class="chk"><input type="checkbox" id="trrm-finger" ${settings.underFinger ? 'checked' : ''}> Confirm button under your finger after Start/Join</label>
@@ -368,6 +383,15 @@
       if (!(mult >= 1 && mult <= 10)) return alert('Multiplier must be between 1 and 10.');
       if (!(steps >= 1 && steps <= 30)) return alert('Max steps must be between 1 and 30.');
       if (!(limit >= 0)) return alert('Daily loss limit must be an amount like 5m, or empty.');
+      const key = String(val('#trrm-key')).trim();
+      if (key !== apiKey()) {
+        try { key ? localStorage.setItem(APIKEY_KEY, key) : localStorage.removeItem(APIKEY_KEY); } catch (_) {}
+        syncError = '';
+        reloadStored();
+        state.logCursor = 0; // new key: rebuild from its log
+        save(STATE_KEY, state);
+        syncLog(true);
+      }
       settings = { base, mult, maxSteps: steps, dailyLimit: limit,
         fast: pop.querySelector('#trrm-fast').checked,
         underFinger: pop.querySelector('#trrm-finger').checked,
@@ -397,7 +421,7 @@
       games = [];
       state.seriesFromT = 0;
       state.open = null;
-      state.logFromT = Date.now();
+      state.logCursor = Math.floor(Date.now() / 1000); // don't import the cleared games again
       save(GAMES_KEY, games);
       save(STATE_KEY, state);
       closePop();
@@ -431,7 +455,7 @@
   }
 
   // A game seen running is stored as open until its result is seen. If you leave
-  // before the end, no bet is filled until the result is read from the activity log
+  // before the end, no bet is filled until the result is read from the log
   // (a missed loss would otherwise restart the series at step 1).
   function openGameUnseen() {
     return !!(state.open && !document.querySelector('[class*="barrel___"]') && !resultMessage());
@@ -443,8 +467,8 @@
   function record(win, bet, t) {
     reloadStored();
     const g = { t, bet, win };
-    // Already imported from the activity log (panel was open while the game ended).
-    const fromLog = games.find(o => o.k && !o.seen && twin(o, g));
+    // Already imported from the log (synced while the result was on screen).
+    const fromLog = games.find(o => o.id && !o.seen && twin(o, g));
     if (fromLog) fromLog.seen = true;
     else games.push(g);
     state.open = null;
@@ -452,6 +476,8 @@
     save(STATE_KEY, state);
     // New game: whatever is in the box now gets replaced with the next step.
     userEdited = false;
+    // Give this game its log id, so the log never adds it a second time.
+    setTimeout(() => syncLog(true), 4000);
   }
 
   function forgetOpen() {
@@ -461,44 +487,88 @@
     tick();
   }
 
-  // ---------- activity log (Torn's header panel, top right) ----------
-  // Torn fills it only while it's open; the rows look like
-  //   "You won the game of Russian Roulette against X winning the pot of $420,000"
-  //   "You lost the game of Russian Roulette against X losing the pot of $200,000 and ..."
-  // with the TCT time in a hidden span: "17:43:21 - 19/10/26".
-  const LOG_RE = /You (won|lost) the game of Russian Roulette against (.+?) (?:winning|losing) the pot of \$([\d,]+)/;
-  const LOG_TIME_RE = /(\d\d):(\d\d):(\d\d) - (\d\d)\/(\d\d)\/(\d\d)/;
-  let lastLogText = '';
+  // ---------- RR log via the API (optional key) ----------
+  // Only with a key the user gave. Calls: one when the page opens or comes back into
+  // view, one a few seconds after each game, at most one per 15 s. The log ids make
+  // every game unique, so nothing is ever counted twice.
+  const LOG_WIN = 8395, LOG_LOSS = 8396;
+  const SYNC_MIN_MS = 15000;
+  const REBUILD_DAYS = 30;
+  let syncing = false;
+  let lastSync = 0;
+  let syncError = '';
 
-  function readActivityLog() {
-    const rows = document.querySelectorAll('.recent-history-content tr');
-    if (!rows.length) return;
-    const all = [...rows].map(r => r.textContent).join('\n');
-    if (all === lastLogText) return;
-    lastLogText = all;
-    const found = [];
-    for (const row of rows) {
-      const m = (row.textContent || '').match(LOG_RE);
-      const tm = (row.textContent || '').match(LOG_TIME_RE);
-      if (!m || !tm) continue;
-      const t = Date.UTC(2000 + +tm[6], +tm[5] - 1, +tm[4], +tm[1], +tm[2], +tm[3]);
-      const pot = parseInt(m[3].replace(/,/g, ''), 10);
-      found.push({ t, bet: Math.round(pot / 2), win: m[1] === 'won', k: `${t}|${m[2]}` });
+  function apiKey() {
+    try { return (localStorage.getItem(APIKEY_KEY) || '').trim(); } catch (_) { return ''; }
+  }
+
+  // One page of RR win/loss entries (the API returns at most 100, newest first).
+  async function fetchLog(key, from, to) {
+    const res = await fetch(`https://api.torn.com/user/?selections=log&log=${LOG_WIN},${LOG_LOSS}`
+      + `&from=${from}${to ? `&to=${to}` : ''}&key=${encodeURIComponent(key)}&comment=RRMartingale`);
+    const data = await res.json();
+    if (data.error) {
+      const e = new Error(data.error.code === 16 ? 'key has no log access' : data.error.error);
+      e.api = data.error.code;
+      throw e;
     }
-    reloadStored();
-    let changed = false;
-    for (const g of found.sort((a, b) => a.t - b.t)) {
-      if (g.t < state.logFromT || games.some(o => o.k === g.k)) continue;
-      // Same game already recorded on the page: just remember its log key.
-      const pageTwin = games.find(o => !o.k && twin(o, g));
-      if (pageTwin) pageTwin.k = g.k;
-      else games.push(g);
-      changed = true;
-      if (state.open && g.t >= state.open.t - TWIN_MS) state.open = null;
+    return Object.entries(data.log || {})
+      .map(([id, l]) => ({ id, log: l.log, ts: l.timestamp, pot: l.data && l.data.pot }))
+      .filter(l => (l.log === LOG_WIN || l.log === LOG_LOSS) && l.pot > 0);
+  }
+  const toGame = l => ({ id: l.id, t: l.ts * 1000, bet: Math.round(l.pot / 2), win: l.log === LOG_WIN });
+
+  async function syncLog(force) {
+    const key = apiKey();
+    if (!key || syncing) return;
+    if (!force && Date.now() - lastSync < SYNC_MIN_MS) return;
+    syncing = true;
+    lastSync = Date.now();
+    try {
+      reloadStored();
+      const rebuild = !state.logCursor;
+      const since = rebuild ? Math.floor(Date.now() / 1000) - REBUILD_DAYS * 86400 : state.logCursor;
+      // Page backwards until we reach `since`; a normal sync is a single call.
+      const logs = [];
+      let to = 0;
+      for (let page = 0; page < 20; page++) {
+        const batch = await fetchLog(key, since, to);
+        logs.push(...batch);
+        if (batch.length < 100) break;
+        to = Math.min(...batch.map(l => l.ts)) - 1;
+      }
+      reloadStored();
+      const found = logs.map(toGame);
+      if (rebuild) {
+        // The log is the truth for the last 30 days: replace whatever was recorded
+        // there, keeping only page results newer than the log (game just ended).
+        const newest = found.reduce((m, g) => Math.max(m, g.t), 0);
+        games = games.filter(g => g.t < since * 1000)
+          .concat(found, games.filter(g => !g.id && g.t >= since * 1000 && g.t > newest + TWIN_MS));
+      } else {
+        for (const g of found) {
+          if (games.some(o => o.id === g.id)) continue;
+          // Same game already recorded on the page: give it the log id and server time.
+          const pageTwin = games.find(o => !o.id && twin(o, g));
+          if (pageTwin) { pageTwin.id = g.id; pageTwin.t = g.t; } else games.push(g);
+        }
+      }
+      for (const g of found) {
+        state.logCursor = Math.max(state.logCursor, g.t / 1000);
+        if (state.open && g.t >= state.open.t - TWIN_MS) state.open = null;
+      }
+      if (!state.logCursor) state.logCursor = since;
+      syncError = '';
+      saveGames();
+      save(STATE_KEY, state);
+    } catch (e) {
+      syncError = e.api ? e.message : 'Torn API unreachable';
+      // A key Torn rejects is removed, so it isn't retried on every visit.
+      if (e.api === 2) { try { localStorage.removeItem(APIKEY_KEY); } catch (_) {} }
+    } finally {
+      syncing = false;
+      schedule();
     }
-    if (!changed) return;
-    saveGames();
-    save(STATE_KEY, state);
   }
 
   function checkGame() {
@@ -595,7 +665,6 @@
       injectStyles();
       applyLook();
       moveConfirmUnderFinger();
-      readActivityLog();
       checkGame();
       autofill();
       renderBar();
@@ -622,7 +691,7 @@
       });
       if (external) schedule();
     }).observe(document.body, { childList: true, subtree: true, characterData: true });
-    document.addEventListener('visibilitychange', () => { if (!document.hidden) schedule(); });
+    document.addEventListener('visibilitychange', () => { if (!document.hidden) { syncLog(false); schedule(); } });
     // The user's own typing (trusted events only; our fills are untrusted) or a tap on
     // Torn's $ (max) button marks the bet as chosen by the user.
     document.addEventListener('input', e => {
@@ -669,6 +738,7 @@
       }
     }, true);
     tick();
+    syncLog(true);
   }
   start();
 })();
