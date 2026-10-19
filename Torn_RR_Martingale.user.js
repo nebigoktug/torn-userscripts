@@ -2,7 +2,7 @@
 // @name         Torn RR Martingale & Tracker
 // @namespace    https://greasyfork.org/users/nebigoktug
 // @version      1.2.0
-// @description  Russian Roulette: fills the bet box with the next Martingale amount (you still press Start), tracks today's W/L and profit, shows the loss streak and what the series risks. Optional daily loss limit, fast animations, compact layout, confirm button under your finger. Asks for the result of a game you left before it finished. No requests, no clicks.
+// @description  Russian Roulette: fills the bet box with the next Martingale amount (you still press Start), tracks today's W/L and profit, shows the loss streak and what the series risks. Optional daily loss limit, fast animations, compact layout, confirm button under your finger. Reads results of games you left early from Torn's activity log when you open it. No requests, no clicks.
 // @author       NebiGoktug
 // @license      MIT
 // @match        https://www.torn.com/page.php?sid=russianRoulette*
@@ -36,13 +36,17 @@
     try { localStorage.setItem(key, JSON.stringify(value)); } catch (_) {}
   }
   let settings = Object.assign({}, DEFAULTS, load(SETTINGS_KEY, {}));
-  // games: [{ t: ms, bet: $, win: bool }], oldest first
+  // games: [{ t: ms, bet: $, win: bool, k?: activity log key }], oldest first
   let games = load(GAMES_KEY, []);
   // seriesFromT: games before this time (ms) belong to an earlier Martingale series (manual reset)
   // unlockDay: TCT day on which the daily loss limit was unlocked
   // open: { t, bet } for a game seen running whose result hasn't been seen yet
-  const STATE_DEFAULTS = { seriesFromT: 0, unlockDay: '', open: null };
+  // logFromT: activity log results before this time (ms) are never imported
+  const STATE_DEFAULTS = { seriesFromT: 0, unlockDay: '', open: null, logFromT: 0 };
   let state = Object.assign({}, STATE_DEFAULTS, load(STATE_KEY, {}));
+  // Results already in the log when this version first runs were counted (or not) by
+  // the old version; don't import them again.
+  if (!state.logFromT) { state.logFromT = Date.now(); save(STATE_KEY, state); }
   // 1.1.x stored the series start as an index into games.
   if ('seriesFrom' in state) {
     const i = state.seriesFrom;
@@ -173,8 +177,7 @@
       #trrm-bar.manual { border-left-color: #f9a825; }
       #trrm-bar b { color: #fff !important; }
       #trrm-bar .trrm-dim { color: #9fb0c0 !important; }
-      #trrm-bar .trrm-ans { display: inline-block; margin: 5px 6px 0 0; padding: 3px 10px; border-radius: 4px; cursor: pointer;
-        background: #37474f !important; color: #fff !important; font-weight: bold; }
+      #trrm-bar .trrm-ans { cursor: pointer; text-decoration: underline; color: #9fb0c0 !important; }
       #trrm-bar .trrm-gear, #trrm-line .trrm-gear { cursor: pointer; float: right; padding: 0 2px 0 8px; user-select: none; }
       #trrm-line { display: inline-block; margin: 2px 0 4px; padding: 2px 8px; border-radius: 10px; cursor: pointer;
         font: bold 12px/1.5 Arial, sans-serif; background: #263238 !important; color: #e6edf3 !important; }
@@ -210,8 +213,7 @@
       bar.id = 'trrm-bar';
       bar.addEventListener('click', e => {
         if (e.target.closest('.trrm-gear')) { e.preventDefault(); e.stopPropagation(); openSettings(); }
-        const ans = e.target.closest('.trrm-ans');
-        if (ans) { e.preventDefault(); e.stopPropagation(); resolveOpen(ans.dataset.a); }
+        if (e.target.closest('.trrm-ans')) { e.preventDefault(); e.stopPropagation(); forgetOpen(); }
       });
       wrap.parentNode.insertBefore(bar, wrap);
     }
@@ -228,8 +230,9 @@
     if (nb.block === 'open') {
       const o = state.open;
       cls = 'warn';
-      html = `<b>Martingale</b> · You left a ${fmt(o.bet)} game (${new Date(o.t).toISOString().slice(11, 16)} TCT) before it finished. How did it end?`
-        + `<br><span class="trrm-ans" data-a="win">✓ Won</span><span class="trrm-ans" data-a="loss">✗ Lost</span><span class="trrm-ans" data-a="skip">Don't count</span>`;
+      html = `<b>Martingale</b> · The ${fmt(o.bet)} game from ${new Date(o.t).toISOString().slice(11, 16)} TCT ended while you were away.`
+        + ` Open the activity log (top right) once and its result is read from there.`
+        + ` <span class="trrm-ans" title="Forget this game">ignore</span>`;
     } else if (nb.block) {
       cls = 'warn';
       html = `<b>Martingale</b> · ${nb.block}`;
@@ -394,6 +397,7 @@
       games = [];
       state.seriesFromT = 0;
       state.open = null;
+      state.logFromT = Date.now();
       save(GAMES_KEY, games);
       save(STATE_KEY, state);
       closePop();
@@ -427,15 +431,22 @@
   }
 
   // A game seen running is stored as open until its result is seen. If you leave
-  // before the end, the next visit asks how it ended instead of silently starting
-  // the series over (a missed loss would otherwise reset the bet to step 1).
+  // before the end, no bet is filled until the result is read from the activity log
+  // (a missed loss would otherwise restart the series at step 1).
   function openGameUnseen() {
     return !!(state.open && !document.querySelector('[class*="barrel___"]') && !resultMessage());
   }
 
+  const TWIN_MS = 120000;
+  const twin = (a, b) => a.win === b.win && a.bet === b.bet && Math.abs(a.t - b.t) < TWIN_MS;
+
   function record(win, bet, t) {
     reloadStored();
-    games.push({ t, bet, win });
+    const g = { t, bet, win };
+    // Already imported from the activity log (panel was open while the game ended).
+    const fromLog = games.find(o => o.k && !o.seen && twin(o, g));
+    if (fromLog) fromLog.seen = true;
+    else games.push(g);
     state.open = null;
     saveGames();
     save(STATE_KEY, state);
@@ -443,14 +454,51 @@
     userEdited = false;
   }
 
-  function resolveOpen(answer) {
+  function forgetOpen() {
     reloadStored();
-    const o = state.open;
-    if (!o) return tick();
-    if (answer === 'win' || answer === 'loss') return record(answer === 'win', o.bet, o.t), tick();
     state.open = null;
     save(STATE_KEY, state);
     tick();
+  }
+
+  // ---------- activity log (Torn's header panel, top right) ----------
+  // Torn fills it only while it's open; the rows look like
+  //   "You won the game of Russian Roulette against X winning the pot of $420,000"
+  //   "You lost the game of Russian Roulette against X losing the pot of $200,000 and ..."
+  // with the TCT time in a hidden span: "17:43:21 - 19/10/26".
+  const LOG_RE = /You (won|lost) the game of Russian Roulette against (.+?) (?:winning|losing) the pot of \$([\d,]+)/;
+  const LOG_TIME_RE = /(\d\d):(\d\d):(\d\d) - (\d\d)\/(\d\d)\/(\d\d)/;
+  let lastLogText = '';
+
+  function readActivityLog() {
+    const rows = document.querySelectorAll('.recent-history-content tr');
+    if (!rows.length) return;
+    const all = [...rows].map(r => r.textContent).join('\n');
+    if (all === lastLogText) return;
+    lastLogText = all;
+    const found = [];
+    for (const row of rows) {
+      const m = (row.textContent || '').match(LOG_RE);
+      const tm = (row.textContent || '').match(LOG_TIME_RE);
+      if (!m || !tm) continue;
+      const t = Date.UTC(2000 + +tm[6], +tm[5] - 1, +tm[4], +tm[1], +tm[2], +tm[3]);
+      const pot = parseInt(m[3].replace(/,/g, ''), 10);
+      found.push({ t, bet: Math.round(pot / 2), win: m[1] === 'won', k: `${t}|${m[2]}` });
+    }
+    reloadStored();
+    let changed = false;
+    for (const g of found.sort((a, b) => a.t - b.t)) {
+      if (g.t < state.logFromT || games.some(o => o.k === g.k)) continue;
+      // Same game already recorded on the page: just remember its log key.
+      const pageTwin = games.find(o => !o.k && twin(o, g));
+      if (pageTwin) pageTwin.k = g.k;
+      else games.push(g);
+      changed = true;
+      if (state.open && g.t >= state.open.t - TWIN_MS) state.open = null;
+    }
+    if (!changed) return;
+    saveGames();
+    save(STATE_KEY, state);
   }
 
   function checkGame() {
@@ -546,6 +594,7 @@
       injectStyles();
       applyLook();
       moveConfirmUnderFinger();
+      readActivityLog();
       checkGame();
       autofill();
       renderBar();
